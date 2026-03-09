@@ -907,7 +907,7 @@ mod tests {
             worktree_base: temp_dir.join("worktrees"),
             config_dir: temp_dir.clone(),
             git_binary: "git".to_string(),
-            model: "opencode/claude-3-5-haiku".to_string(),
+            model: "opencode/gpt-5-nano".to_string(),
         };
 
         // First call should create all files
@@ -951,7 +951,7 @@ mod tests {
             worktree_base: temp_dir.join("worktrees"),
             config_dir: temp_dir.clone(),
             git_binary: "git".to_string(),
-            model: "opencode/claude-3-5-haiku".to_string(),
+            model: "opencode/gpt-5-nano".to_string(),
         };
 
         // Setup should succeed and not overwrite existing files

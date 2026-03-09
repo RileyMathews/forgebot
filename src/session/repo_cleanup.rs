@@ -185,7 +185,7 @@ mod tests {
                 worktree_base: std::path::PathBuf::from("/tmp/worktrees"),
                 config_dir: std::path::PathBuf::from("/tmp/config"),
                 git_binary: "git".to_string(),
-                model: "opencode/claude-3-5-haiku".to_string(),
+                model: "opencode/gpt-5-nano".to_string(),
             },
             database: crate::config::DatabaseConfig {
                 path: std::path::PathBuf::from("/tmp/test.db"),
