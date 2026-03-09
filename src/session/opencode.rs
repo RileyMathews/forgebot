@@ -244,7 +244,9 @@ pub async fn run_opencode(params: RunOpencodeParams<'_>) -> Result<Option<String
         );
     }
 
-    cmd.arg(prompt)
+    cmd.arg("--dir")
+        .arg(worktree_path)
+        .arg(prompt)
         .current_dir(worktree_path)
         .envs(&env_vars)
         .stdout(Stdio::piped())
