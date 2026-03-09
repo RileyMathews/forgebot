@@ -124,7 +124,8 @@ pub struct RunOpencodeParams<'a> {
     pub db: &'a DbPool,
     pub config: &'a Config,
     pub session_record_id: &'a str,
-    pub opencode_session_id: &'a str,
+    pub derived_session_id: &'a str,
+    pub external_opencode_session_id: Option<&'a str>,
     pub agent_mode: &'a str,
     pub worktree_path: &'a Path,
     pub prompt: &'a str,
@@ -134,27 +135,27 @@ pub struct RunOpencodeParams<'a> {
 /// Run opencode subprocess with the given parameters.
 ///
 /// Captures stdout and stderr and saves them to the database for debugging.
-///
-/// # Arguments
-/// * `params` - All parameters for running opencode
+/// If external_opencode_session_id is provided, continues that session.
+/// Otherwise, creates a new session with the derived_session_id as title.
 ///
 /// # Returns
-/// * `Ok(())` if opencode exits with code 0
-/// * `Err` if opencode fails or exits non-zero
-pub async fn run_opencode(params: RunOpencodeParams<'_>) -> Result<()> {
+/// * `Ok(Some(session_id))` - the opencode session ID (captured or provided)
+/// * `Ok(None)` - if we couldn't capture the session ID
+/// * `Err` - if opencode fails
+pub async fn run_opencode(params: RunOpencodeParams<'_>) -> Result<Option<String>> {
     let binary = &params.config.opencode.binary;
     let opencode_config_home = params.config.opencode.config_dir.clone();
     let db = params.db;
     let session_record_id = params.session_record_id;
-    let opencode_session_id = params.opencode_session_id;
+    let derived_session_id = params.derived_session_id;
     let agent_mode = params.agent_mode;
     let worktree_path = params.worktree_path;
     let prompt = params.prompt;
     let env_extras = params.env_extras;
 
     debug!(
-        "Spawning opencode: binary={}, opencode_session_id={}, agent_mode={}",
-        binary, opencode_session_id, agent_mode
+        "Spawning opencode: binary={}, derived_session_id={}, agent_mode={}",
+        binary, derived_session_id, agent_mode
     );
 
     // Build environment
@@ -226,11 +227,24 @@ pub async fn run_opencode(params: RunOpencodeParams<'_>) -> Result<()> {
     // Build the command
     let mut cmd = Command::new(&binary_path);
     cmd.arg("run")
-        .arg("--session")
-        .arg(opencode_session_id)
         .arg("--agent")
         .arg(agent_mode)
-        .arg(prompt)
+        .arg("--title")
+        .arg(derived_session_id);
+
+    // If we have an external session ID, continue that session
+    // Otherwise, opencode will create a new one
+    if let Some(external_id) = params.external_opencode_session_id {
+        cmd.arg("--session").arg(external_id);
+        info!("Continuing opencode session: {}", external_id);
+    } else {
+        info!(
+            "Creating new opencode session with title: {}",
+            derived_session_id
+        );
+    }
+
+    cmd.arg(prompt)
         .current_dir(worktree_path)
         .envs(&env_vars)
         .stdout(Stdio::piped())
@@ -280,9 +294,29 @@ pub async fn run_opencode(params: RunOpencodeParams<'_>) -> Result<()> {
         // Don't fail the entire operation if logging fails
     }
 
+    // Try to capture the opencode session ID
+    let captured_session_id = if output.status.success() {
+        match capture_opencode_session_id(binary, derived_session_id).await {
+            Ok(Some(id)) => {
+                info!("Captured opencode session ID: {}", id);
+                Some(id)
+            }
+            Ok(None) => {
+                warn!("Could not capture opencode session ID");
+                None
+            }
+            Err(e) => {
+                error!("Failed to capture opencode session ID: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     if output.status.success() {
         debug!("opencode exited successfully with code 0");
-        Ok(())
+        Ok(captured_session_id)
     } else {
         error!(
             "opencode failed with exit code {}: stdout={}, stderr={}",
@@ -294,6 +328,52 @@ pub async fn run_opencode(params: RunOpencodeParams<'_>) -> Result<()> {
             stdout,
             stderr
         ))
+    }
+}
+
+/// Capture the opencode session ID by querying the session list.
+/// Looks for a session with the given title (which we set to our derived_session_id).
+async fn capture_opencode_session_id(binary: &str, title: &str) -> Result<Option<String>> {
+    // Query opencode session list
+    let output = Command::new(binary)
+        .arg("session")
+        .arg("list")
+        .arg("--format")
+        .arg("json")
+        .arg("-n")
+        .arg("5") // Get 5 most recent sessions
+        .output()
+        .await
+        .context("Failed to run opencode session list")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("opencode session list failed: {}", stderr);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Parse JSON output to find session with matching title
+    // The output is an array of session objects
+    // We need to find the one with title matching our derived_session_id
+    match serde_json::from_str::<serde_json::Value>(&stdout) {
+        Ok(sessions) => {
+            if let Some(sessions_array) = sessions.as_array() {
+                for session in sessions_array {
+                    if let Some(session_title) = session.get("title").and_then(|t| t.as_str()) {
+                        if session_title == title {
+                            if let Some(session_id) = session.get("id").and_then(|id| id.as_str()) {
+                                return Ok(Some(session_id.to_string()));
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(None)
+        }
+        Err(e) => {
+            anyhow::bail!("Failed to parse opencode session list JSON: {}", e)
+        }
     }
 }
 
@@ -527,10 +607,20 @@ Error output: {}",
     }
 
     // 14. Spawn opencode
+    // Check if we already have an external opencode session ID stored
+    let external_session_id = if session_record.opencode_session_id.starts_with("ses_") {
+        // This is our derived ID, not the real opencode ID
+        None
+    } else {
+        // This looks like a real opencode session ID
+        Some(session_record.opencode_session_id.as_str())
+    };
+
     info!(
         session_id = %session_id,
         agent_mode = %agent_mode,
         worktree_path = %worktree_path.display(),
+        has_external_session = external_session_id.is_some(),
         "Spawning opencode"
     );
 
@@ -538,7 +628,8 @@ Error output: {}",
         db,
         config,
         session_record_id: &session_record.id,
-        opencode_session_id: &session_id,
+        derived_session_id: &session_id,
+        external_opencode_session_id: external_session_id,
         agent_mode,
         worktree_path: &worktree_path,
         prompt: &prompt,
@@ -548,12 +639,25 @@ Error output: {}",
 
     // 15. Handle result
     match opencode_result {
-        Ok(()) => {
+        Ok(captured_session_id) => {
             info!(
                 session_id = %session_id,
                 exit_code = 0,
+                captured_session_id = ?captured_session_id,
                 "Session completed successfully"
             );
+
+            // If we captured a new opencode session ID, update the database
+            if let Some(new_session_id) = captured_session_id {
+                if let Err(e) =
+                    crate::db::update_session_opencode_id(db, &session_record.id, &new_session_id)
+                        .await
+                {
+                    error!("Failed to update session with opencode ID: {}", e);
+                    // Don't fail the entire operation for this
+                }
+            }
+
             update_session_state(db, &session_record.id, "idle").await?;
 
             let success_msg = match trigger.action.as_str() {

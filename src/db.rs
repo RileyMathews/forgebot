@@ -790,7 +790,35 @@ pub async fn get_session_logs(pool: &DbPool, session_id: &str) -> Result<Vec<Ses
     Ok(logs)
 }
 
-/// Delete all session logs for a session (useful for cleanup)
+/// Update a session's opencode session ID
+pub async fn update_session_opencode_id(
+    pool: &DbPool,
+    session_id: &str,
+    opencode_session_id: &str,
+) -> Result<()> {
+    let result = sqlx::query(
+        r#"
+        UPDATE sessions
+        SET opencode_session_id = ?1, updated_at = datetime('now')
+        WHERE id = ?2
+        "#,
+    )
+    .bind(opencode_session_id)
+    .bind(session_id)
+    .execute(pool)
+    .await
+    .with_context(|| format!("Failed to update session opencode ID: {}", session_id))?;
+
+    if result.rows_affected() == 0 {
+        anyhow::bail!("Session not found: {}", session_id);
+    }
+
+    debug!(
+        "Updated session opencode ID: {} -> {}",
+        session_id, opencode_session_id
+    );
+    Ok(())
+}
 pub async fn delete_session_logs(pool: &DbPool, session_id: &str) -> Result<()> {
     sqlx::query(
         r#"
