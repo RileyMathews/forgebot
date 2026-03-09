@@ -49,13 +49,13 @@ in
       description = ''
         Path to a file containing secret environment variables.
         This file is loaded via systemd's EnvironmentFile directive.
-        
+
         The file should contain lines like:
           FORGEBOT_WEBHOOK_SECRET=your-webhook-secret
-          FORGEBOT_FORGEJO_URL=https://git.example.com
           FORGEBOT_FORGEJO_TOKEN=your-api-token
-        
+
         This enables integration with sops-nix or other secret management systems.
+        Note: FORGEBOT_FORGEJO_URL is set via the forgejo.url option, not in secrets.
       '';
     };
 
@@ -110,6 +110,16 @@ in
     forgejo = lib.mkOption {
       type = lib.types.submodule {
         options = {
+          url = lib.mkOption {
+            type = lib.types.str;
+            example = "https://git.example.com";
+            description = ''
+              Base URL of your Forgejo instance.
+              This is the non-secret URL used to connect to the Forgejo API.
+              Example: https://git.example.com or https://code.example.com
+            '';
+          };
+
           botUsername = lib.mkOption {
             type = lib.types.str;
             default = "forgebot";
@@ -282,6 +292,7 @@ in
             # Non-secret forgebot configuration
             "FORGEBOT_SERVER_HOST=${cfg.server.host}"
             "FORGEBOT_SERVER_PORT=${toString cfg.server.port}"
+            "FORGEBOT_FORGEJO_URL=${cfg.forgejo.url}"
             "FORGEBOT_FORGEJO_BOT_USERNAME=${cfg.forgejo.botUsername}"
             "FORGEBOT_OPENCODE_BINARY=${cfg.opencode.binary}"
             "FORGEBOT_OPENCODE_WORKTREE_BASE=${cfg.opencode.worktreeBase}"

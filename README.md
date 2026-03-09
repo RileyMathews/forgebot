@@ -65,6 +65,9 @@ services.forgebot = {
   server.host = "127.0.0.1";  # default: 127.0.0.1
   server.port = 8765;         # default: 8765
   
+  # Forgejo instance URL (required - non-secret)
+  forgejo.url = "https://git.example.com";
+  
   # Path to secrets file (required - see below)
   secretsFilePath = "/run/secrets/forgebot";
 };
@@ -85,7 +88,11 @@ services.forgebot = {
     server.host = "127.0.0.1";
     server.port = 8765;
     
+    # Forgejo instance URL (required - non-secret, set via NixOS config)
+    forgejo.url = "https://git.example.com";
+    
     # Secrets file loaded via systemd EnvironmentFile
+    # Only contains webhook secret and API token
     secretsFilePath = config.sops.secrets.forgebot.path;
   };
 }
@@ -95,7 +102,6 @@ The secrets file (at `/run/secrets/forgebot` in the example above) must contain:
 
 ```
 FORGEBOT_WEBHOOK_SECRET=your-webhook-secret-here
-FORGEBOT_FORGEJO_URL=https://git.example.com
 FORGEBOT_FORGEJO_TOKEN=your-forgejo-api-token
 ```
 
@@ -265,8 +271,9 @@ These must be set or forgebot will exit with an error:
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `FORGEBOT_WEBHOOK_SECRET` | Webhook secret for HMAC verification (must match Forgejo webhook settings) | `openssl rand -hex 32` |
-| `FORGEBOT_FORGEJO_URL` | Base URL of your Forgejo instance | `https://git.example.com` |
 | `FORGEBOT_FORGEJO_TOKEN` | API token for Forgejo authentication | Create in Forgejo Settings → Applications |
+
+**Note**: `FORGEBOT_FORGEJO_URL` is also required, but on NixOS it should be set via the `forgejo.url` option. For manual deployments, it must be set as an environment variable.
 
 ### Optional Environment Variables
 
@@ -276,6 +283,7 @@ These have sensible defaults if not set:
 |----------|---------|-------------|
 | `FORGEBOT_SERVER_HOST` | `127.0.0.1` | Host address to bind HTTP server |
 | `FORGEBOT_SERVER_PORT` | `8765` | TCP port to listen on |
+| `FORGEBOT_FORGEJO_URL` | *(required)* | Base URL of your Forgejo instance — set via `forgejo.url` in NixOS, or as env var for manual deployments |
 | `FORGEBOT_FORGEJO_BOT_USERNAME` | `forgebot` | Username that forgebot operates as |
 | `FORGEBOT_OPENCODE_BINARY` | `opencode` | Path to opencode binary |
 | `FORGEBOT_OPENCODE_WORKTREE_BASE` | `/var/lib/forgebot/worktrees` | Base directory for git worktrees |
@@ -400,7 +408,8 @@ Available commands in the dev shell:
 
 #### "ERROR: FORGEBOT_WEBHOOK_SECRET environment variable is required but not set"
 
-- The three required environment variables must be set: `FORGEBOT_WEBHOOK_SECRET`, `FORGEBOT_FORGEJO_URL`, `FORGEBOT_FORGEJO_TOKEN`
+- The two required secret environment variables must be set: `FORGEBOT_WEBHOOK_SECRET`, `FORGEBOT_FORGEJO_TOKEN`
+- `FORGEBOT_FORGEJO_URL` must also be set, either via NixOS `forgejo.url` option or as an environment variable
 - Check that your secrets file (if using `secretsFilePath`) is properly formatted and readable by the forgebot user
 - Verify systemd loaded the environment file: `systemctl show forgebot --property=EnvironmentFile`
 
