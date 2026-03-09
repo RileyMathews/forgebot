@@ -33,3 +33,6 @@ The issue ID is in $FORGEBOT_ISSUE_ID. The PR ID (if in revision phase) is in $F
 ## Constraints
 - Do not modify files outside the current worktree.
 - Do not install global packages or modify system config.
+- Prefer workspace-relative paths for all tools. Avoid absolute paths unless strictly required.
+- If any tool call is denied or fails, continue with an alternative approach and complete as much work as possible.
+- If blocked by environment/auth/permission constraints, post a final issue comment summarizing what succeeded, what failed, and exactly what is needed to continue.

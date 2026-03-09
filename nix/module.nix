@@ -407,6 +407,10 @@ in
             "FORGEBOT_OPENCODE_CONFIG_DIR=${cfg.dataDir}/config/opencode/.opencode"
             "FORGEBOT_OPENCODE_MODEL=${cfg.opencode.model}"
             "FORGEBOT_DATABASE_PATH=${cfg.database.path}"
+            "GIT_AUTHOR_NAME=forgebot"
+            "GIT_AUTHOR_EMAIL=forgebot@localhost"
+            "GIT_COMMITTER_NAME=forgebot"
+            "GIT_COMMITTER_EMAIL=forgebot@localhost"
             # XDG directories for opencode (auth.json goes to $XDG_DATA_HOME/opencode/auth.json)
             "XDG_DATA_HOME=${cfg.dataDir}/data"
             "XDG_CONFIG_HOME=${cfg.dataDir}/config"

@@ -87,8 +87,7 @@ impl Config {
         let bot_username = env_var_with_default("FORGEBOT_FORGEJO_BOT_USERNAME", "forgebot");
         let opencode_binary = env_var_with_default("FORGEBOT_OPENCODE_BINARY", "opencode");
         let git_binary = env_var_with_default("FORGEBOT_GIT_BINARY", "git");
-        let opencode_model =
-            env_var_with_default("FORGEBOT_OPENCODE_MODEL", "opencode/kimi-k2.5");
+        let opencode_model = env_var_with_default("FORGEBOT_OPENCODE_MODEL", "opencode/kimi-k2.5");
         let worktree_base = env_var_path_with_default(
             "FORGEBOT_OPENCODE_WORKTREE_BASE",
             "/var/lib/forgebot/worktrees",

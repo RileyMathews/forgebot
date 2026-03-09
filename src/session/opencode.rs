@@ -31,8 +31,7 @@ const TOOL_CREATE_PR: &str = include_str!("../../opencode-config/tools/create-pr
 /// Sets up the opencode config directory with embedded template files.
 ///
 /// This function is called once on startup. It creates the directory structure
-/// and writes template files if they don't already exist. Existing files are
-/// never overwritten, allowing operators to customize them.
+/// and writes managed template files, overwriting any existing content.
 ///
 /// # Arguments
 /// * `config` - The opencode configuration containing the config_dir path
@@ -99,20 +98,16 @@ pub fn setup_opencode_config_dir(config: &OpencodeConfig) -> Result<()> {
         ),
     ];
 
-    // Write each file if it doesn't exist
+    // Write each managed file, overwriting any existing content
     for (path, content, name) in &files_to_write {
-        if path.exists() {
-            info!("opencode config file already exists, skipping: {}", name);
-        } else {
-            std::fs::write(path, content).with_context(|| {
-                format!(
-                    "Failed to write opencode config file: {} at {}",
-                    name,
-                    path.display()
-                )
-            })?;
-            info!("Created opencode config file: {}", name);
-        }
+        std::fs::write(path, content).with_context(|| {
+            format!(
+                "Failed to write opencode config file: {} at {}",
+                name,
+                path.display()
+            )
+        })?;
+        info!("Wrote opencode config file: {}", name);
     }
 
     info!("opencode config directory setup complete");
@@ -192,10 +187,7 @@ pub async fn run_opencode(params: RunOpencodeParams<'_>) -> Result<Option<String
         "FORGEBOT_FORGEJO_TOKEN".to_string(),
         params.config.forgejo.token.clone(),
     );
-    env_vars.insert(
-        "FORGEBOT_REPO".to_string(),
-        repo_full_name.to_string(),
-    );
+    env_vars.insert("FORGEBOT_REPO".to_string(), repo_full_name.to_string());
     // Note: XDG_DATA_HOME and XDG_CONFIG_HOME are set by the systemd service
     // and inherited from the process environment. These control where opencode
     // looks for auth.json ($XDG_DATA_HOME/opencode/auth.json) and global config.
@@ -553,38 +545,7 @@ pub async fn dispatch_session(
         return Err(anyhow!("Session is busy"));
     }
 
-    // 6. Load environment
-    let env_extras = match env_loader::load_env("none", &config.opencode.worktree_base).await {
-        Ok(env) => env,
-        Err(e) => {
-            let error_str = e.to_string();
-            error!(
-                "Environment loading failed for session {}: {}",
-                session_id, error_str
-            );
-            let _ = forgejo
-                .post_issue_comment(
-                    &trigger.repo_full_name,
-                    trigger.issue_id,
-                    &format!(
-                        "❌ forgebot: env loader failed and the session cannot continue. \
-Fix the loader configuration and re-trigger when ready. \
-Error output: {}",
-                        error_str
-                    ),
-                )
-                .await;
-
-            // Set state to error if session exists
-            if let Some(ref session) = existing_session {
-                let _ = update_session_state(db, &session.id, "error").await;
-            }
-
-            return Err(anyhow!("Environment loading failed: {}", error_str));
-        }
-    };
-
-    // 7. Build prompt
+    // 6. Build prompt
     let prompt = build_prompt(
         &trigger.action,
         &issue,
@@ -593,7 +554,7 @@ Error output: {}",
         trigger.pr_id,
     );
 
-    // 8. Look up repository metadata and get/create worktree
+    // 7. Look up repository metadata and get/create worktree
     let repo_record = crate::db::get_repo_by_full_name(db, &trigger.repo_full_name)
         .await?
         .ok_or_else(|| {
@@ -628,6 +589,42 @@ Error output: {}",
             )
         })?;
     }
+
+    // 8. Load environment in the worktree using the repository's configured loader.
+    let env_extras = match env_loader::load_env(&repo_record.env_loader, &worktree_path).await {
+        Ok(env) => env,
+        Err(e) => {
+            let error_str = e.to_string();
+            error!(
+                session_id = %session_id,
+                repo = %trigger.repo_full_name,
+                issue_id = %trigger.issue_id,
+                env_loader = %repo_record.env_loader,
+                worktree_path = %worktree_path.display(),
+                err = %error_str,
+                "Environment loading failed"
+            );
+            let _ = forgejo
+                .post_issue_comment(
+                    &trigger.repo_full_name,
+                    trigger.issue_id,
+                    &format!(
+                        "❌ forgebot: env loader '{}' failed and the session cannot continue. \
+Fix the loader configuration and re-trigger when ready. \
+Error output: {}",
+                        repo_record.env_loader, error_str
+                    ),
+                )
+                .await;
+
+            // Set state to error if session exists
+            if let Some(ref session) = existing_session {
+                let _ = update_session_state(db, &session.id, "error").await;
+            }
+
+            return Err(anyhow!("Environment loading failed: {}", error_str));
+        }
+    };
 
     // 9. Get or create session record
     let session_record: Session;
@@ -960,7 +957,7 @@ mod tests {
     }
 
     #[test]
-    fn test_setup_opencode_config_dir_preserves_existing_files() {
+    fn test_setup_opencode_config_dir_overwrites_existing_files() {
         let temp_dir = std::env::temp_dir().join(format!(
             "test-opencode-config-existing-{}",
             std::process::id()
@@ -981,12 +978,12 @@ mod tests {
             model: "opencode/kimi-k2.5".to_string(),
         };
 
-        // Setup should succeed and not overwrite existing files
+        // Setup should succeed and overwrite managed files
         setup_opencode_config_dir(&config).expect("Setup should succeed");
 
-        // Verify custom content was preserved
+        // Verify managed content was restored
         let content = std::fs::read_to_string(temp_dir.join("package.json")).unwrap();
-        assert_eq!(content, "custom content");
+        assert!(content.contains("@opencode-ai/plugin"));
 
         // But other files should still be created
         assert!(temp_dir.join("agents").join("forgebot.md").exists());
