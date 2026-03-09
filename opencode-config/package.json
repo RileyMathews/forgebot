@@ -1,0 +1,8 @@
+{
+  "name": "@forgebot/plugins",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "@opencode-ai/plugin": "latest"
+  }
+}

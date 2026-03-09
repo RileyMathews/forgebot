@@ -39,6 +39,12 @@ async fn main() -> Result<()> {
     let config = config::Config::load(cli.config.as_deref())
         .context("Failed to load configuration")?;
 
+    // Set up opencode config directory
+    session::opencode::setup_opencode_config_dir(&config.opencode)
+        .context("Failed to set up opencode config directory")?;
+
+    info!("Opencode config directory initialized");
+
     info!(
         "Configuration loaded successfully (from {:?})",
         cli.config.as_deref().unwrap_or_else(|| std::path::Path::new("default location"))
