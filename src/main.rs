@@ -8,6 +8,7 @@ use tracing_subscriber::FmtSubscriber;
 mod config;
 mod db;
 pub mod forgejo;
+mod session;
 mod webhook;
 
 #[derive(Parser, Debug)]
