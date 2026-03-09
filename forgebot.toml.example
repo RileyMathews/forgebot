@@ -1,0 +1,234 @@
+# forgebot.toml — Example Configuration File
+# ============================================
+# Copy this file to forgebot.toml and customize the values for your deployment.
+# The config file uses TOML format: https://toml.io/en/
+#
+# forgebot searches for config files in this priority order:
+#   1. Path explicitly provided via --config CLI argument
+#   2. ./forgebot.toml (current working directory)
+#   3. ~/.config/forgebot/forgebot.toml (user config directory)
+#   4. /etc/forgebot/forgebot.toml (system-wide config)
+#
+# Note: All fields are optional except where marked [REQUIRED].
+# When optional fields are omitted, sensible defaults are applied.
+
+# ==============================================================================
+# [server] — HTTP Server Configuration
+# ==============================================================================
+# The webhook server listens for incoming Forgejo webhooks and serves the
+# setup UI. This section configures the bind address and webhook security.
+
+[server]
+
+# The host address to bind the HTTP server to.
+# Default: "127.0.0.1"
+# Options:
+#   - "127.0.0.1" — Localhost only (use with reverse proxy)
+#   - "0.0.0.0"   — All interfaces (direct exposure, less secure)
+#   - "10.0.0.5"  — Specific interface IP
+host = "127.0.0.1"
+
+# The TCP port to listen on.
+# Default: 8080
+# Note: Ports below 1024 require root privileges. Use 8080 or higher, or
+# configure a reverse proxy (nginx, traefik, etc.) for port 443.
+port = 8765
+
+# Webhook secret for HMAC signature verification.
+# This MUST match the secret configured in Forgejo webhook settings.
+#
+# [REQUIRED — must be set here OR via environment variable]
+#
+# Security notes:
+#   - Use a cryptographically random string (32+ characters)
+#   - Generate with: openssl rand -hex 32
+#   - Keep this secret! Anyone with this value can forge webhooks.
+#
+# Can be overridden via environment variable: FORGEBOT_WEBHOOK_SECRET
+# This allows you to keep secrets out of version control.
+webhook_secret = "your-webhook-secret-here-change-this-in-production"
+
+# ==============================================================================
+# [forgejo] — Forgejo Integration Settings
+# ==============================================================================
+# forgebot connects to your Forgejo instance to fetch issue details,
+# post comments, and create pull requests. This section configures that
+# connection.
+
+[forgejo]
+
+# The base URL of your Forgejo instance.
+# [REQUIRED]
+#
+# Examples:
+#   - Self-hosted: "https://git.example.com"
+#   - Local dev: "http://localhost:3000"
+#   - Public: "https://codeberg.org"
+url = "https://git.example.com"
+
+# API token for authenticating with Forgejo.
+# [REQUIRED — must be set here OR via environment variable]
+#
+# To create a token:
+#   1. In Forgejo, go to Settings → Applications → Generate New Token
+#   2. Select scope: repo (for repository access)
+#   3. Copy the generated token here
+#
+# Can be overridden via environment variable: FORGEBOT_FORGEJO_TOKEN
+# Example: FORGEBOT_FORGEJO_TOKEN=your_token_here forgebot
+token = "your-forgejo-api-token-here"
+
+# The username that forgebot will operate as.
+# [REQUIRED]
+#
+# This is used to:
+#   - Identify bot comments vs. human comments
+#   - Set the git commit author name
+#   - Filter out self-triggered webhooks
+#
+# The token above must belong to this user.
+bot_username = "forgebot"
+
+# ==============================================================================
+# [opencode] — Agent Integration Settings
+# ==============================================================================
+# forgebot invokes the opencode CLI to run the agentic coding workflow.
+# This section tells forgebot where to find opencode and where to manage
+# its working directories.
+
+[opencode]
+
+# Path to the opencode binary.
+# Default: "opencode" (searches in PATH)
+#
+# Use an absolute path if opencode is not in the system PATH,
+# or if you have multiple versions installed.
+#
+# Examples:
+#   - From PATH: binary = "opencode"
+#   - Absolute path: binary = "/usr/local/bin/opencode"
+#   - NixOS with custom location: binary = "/run/current-system/sw/bin/opencode"
+binary = "opencode"
+
+# Base directory for git worktrees.
+# Default: ~/.local/share/forgebot/worktrees (Linux)
+#         ~/Library/Application Support/forgebot/worktrees (macOS)
+#
+# forgebot creates a git worktree for each issue inside this directory.
+# Each worktree is an isolated checkout, preventing concurrent sessions
+# from interfering with each other.
+#
+# Directory structure created:
+#   <worktree_base>/<owner>_<repo>/<issue_number>/
+#
+# Requirements:
+#   - Must be writable by the forgebot user
+#   - Should have sufficient disk space for multiple repos
+#   - The parent directory must contain the bare clones (see below)
+#
+# Note: The bare clones themselves should be at <worktree_base>/<owner>_<repo>.git
+#       (without the .git suffix in the directory name, but bare clones inside)
+# Example: /var/lib/forgebot/worktrees/alice_myrepo (bare clone)
+#          /var/lib/forgebot/worktrees/alice_myrepo/42/ (worktree for issue #42)
+worktree_base = "/var/lib/forgebot/worktrees"
+
+# Directory for opencode configuration files.
+# Default: ~/.config/forgebot (Linux)
+#         ~/Library/Application Support/forgebot (macOS)
+#
+# forgebot populates this directory on startup with:
+#   - package.json — Node.js dependencies for opencode tools
+#   - agents/forgebot.md — Agent definition file
+#   - tools/ — TypeScript tools (comment-issue, create-pr, etc.)
+#
+# The agent uses these files to interact with Forgejo.
+# Do not modify these files manually — they are managed by forgebot.
+#
+# Requirements:
+#   - Must be writable by the forgebot user
+#   - Must be readable by the opencode process
+config_dir = "/var/lib/forgebot/opencode-config"
+
+# ==============================================================================
+# [database] — SQLite Database Settings
+# ==============================================================================
+# forgebot uses SQLite to persist repository registrations, session state,
+# and other metadata. This is a lightweight embedded database.
+
+[database]
+
+# Path to the SQLite database file.
+# Default: ~/.local/share/forgebot/forgebot.db (Linux)
+#         ~/Library/Application Support/forgebot/forgebot.db (macOS)
+#
+# The database is created automatically on first run if it doesn't exist.
+# Migrations run automatically on startup.
+#
+# For production deployments, consider:
+#   - Using an absolute path in a persistent directory
+#   - Setting up regular backups
+#   - Monitoring disk space
+#
+# Examples:
+#   - User data: path = "~/.local/share/forgebot/forgebot.db"
+#   - System data: path = "/var/lib/forgebot/forgebot.db"
+path = "/var/lib/forgebot/forgebot.db"
+
+# ==============================================================================
+# Environment Variable Reference
+# ==============================================================================
+# The following environment variables can override config file settings:
+#
+# FORGEBOT_WEBHOOK_SECRET
+#   Overrides: [server].webhook_secret
+#   Purpose: Keep webhook secret out of config files (useful for NixOS secrets)
+#
+# FORGEBOT_FORGEJO_TOKEN
+#   Overrides: [forgejo].token
+#   Purpose: Keep API token out of config files and version control
+#
+# FORGEBOT_DATA_DIR (read by NixOS module, not forgebot directly)
+#   Used by: NixOS module systemd service
+#   Purpose: Sets the working directory for the service
+#
+# RUST_LOG
+#   Controls tracing/log output verbosity
+#   Examples: "info", "debug", "trace", "warn"
+#
+# RUST_BACKTRACE
+#   Enables Rust stack traces on panic
+#   Values: "1" (enabled), "full" (verbose)
+#
+# ==============================================================================
+# Complete NixOS Deployment Example
+# ==============================================================================
+# For a full NixOS deployment with proper secret management:
+#
+#   # In your NixOS configuration:
+#   services.forgebot = {
+#     enable = true;
+#     configFile = /etc/secrets/forgebot.toml;
+#     dataDir = "/var/lib/forgebot";
+#   };
+#
+#   # In /etc/secrets/forgebot.toml (not in nix store):
+#   [server]
+#   host = "127.0.0.1"
+#   port = 8765
+#   # webhook_secret set via FORGEBOT_WEBHOOK_SECRET env var
+#
+#   [forgejo]
+#   url = "https://git.example.com"
+#   # token set via FORGEBOT_FORGEJO_TOKEN env var
+#   bot_username = "forgebot"
+#
+#   [opencode]
+#   binary = "opencode"
+#   worktree_base = "/var/lib/forgebot/worktrees"
+#   config_dir = "/var/lib/forgebot/opencode-config"
+#
+#   [database]
+#   path = "/var/lib/forgebot/forgebot.db"
+#
+#   # Environment variables set via systemd service config or a .env file
+#   # loaded by the module's environment option.
