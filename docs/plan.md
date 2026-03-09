@@ -9,11 +9,11 @@ Tick items off as you go. Refer to `forgebot-spec.md` for full detail on any ite
 
 Get a compiling, runnable binary with nothing in it yet.
 
-- [ ] Initialise Cargo workspace (`cargo new forgebot`)
-- [ ] Add core dependencies to `Cargo.toml`: `axum`, `tokio` (full features), `sqlx` (sqlite, runtime-tokio), `reqwest` (json, tls), `serde` + `serde_json`, `toml`, `anyhow`, `tracing`, `tracing-subscriber`
-- [ ] Create `src/main.rs` — reads config file path from `--config` CLI flag (use `clap`), logs startup message, exits cleanly
-- [ ] Create `src/config.rs` — structs for all TOML sections (`[server]`, `[forgejo]`, `[opencode]`, `[database]`); load and validate on startup; env var overrides for `FORGEBOT_WEBHOOK_SECRET` and `FORGEBOT_FORGEJO_TOKEN`
-- [ ] Confirm: `cargo build` succeeds, binary runs and prints config load confirmation
+- [x] Initialise Cargo workspace (`cargo new forgebot`)
+- [x] Add core dependencies to `Cargo.toml`: `axum`, `tokio` (full features), `sqlx` (sqlite, runtime-tokio), `reqwest` (json, tls), `serde` + `serde_json`, `toml`, `anyhow`, `tracing`, `tracing-subscriber`
+- [x] Create `src/main.rs` — reads config file path from `--config` CLI flag (use `clap`), logs startup message, exits cleanly
+- [x] Create `src/config.rs` — structs for all TOML sections (`[server]`, `[forgejo]`, `[opencode]`, `[database]`); load and validate on startup; env var overrides for `FORGEBOT_WEBHOOK_SECRET` and `FORGEBOT_FORGEJO_TOKEN`
+- [x] Confirm: `cargo build` succeeds, binary runs and prints config load confirmation
 
 ---
 
