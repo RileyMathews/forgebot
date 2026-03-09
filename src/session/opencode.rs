@@ -16,6 +16,7 @@ use crate::session::worktree;
 use crate::session::{SessionTrigger, build_prompt, derive_session_id};
 use anyhow::{Context, Result, anyhow};
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::Path;
 use std::process::Stdio;
 use tokio::process::Command;
@@ -173,6 +174,11 @@ pub async fn run_opencode(params: RunOpencodeParams<'_>) -> Result<Option<String
     info!("Environment PATH: {}", path);
     info!("Binary name: {}", binary);
 
+    let base_path = env_vars
+        .get("PATH")
+        .cloned()
+        .unwrap_or_else(|| "".to_string());
+
     // 2. Add env loader output (direnv/nix results), but keep runtime-critical
     // paths from the service environment. Nix dev shells often set HOME to
     // /homeless-shelter, which breaks Bun/opencode under hardened systemd.
@@ -191,6 +197,27 @@ pub async fn run_opencode(params: RunOpencodeParams<'_>) -> Result<Option<String
             continue;
         }
         env_vars.insert(key, value);
+    }
+
+    // Keep service PATH entries available (git/opencode), even if env loader
+    // provides a replacement PATH.
+    let mut merged_path_entries: Vec<String> = Vec::new();
+    let mut seen = HashSet::new();
+    let current_path = env_vars
+        .get("PATH")
+        .cloned()
+        .unwrap_or_else(|| "".to_string());
+    for entry in current_path.split(':').chain(base_path.split(':')) {
+        if entry.is_empty() {
+            continue;
+        }
+        let entry_str = entry.to_string();
+        if seen.insert(entry_str.clone()) {
+            merged_path_entries.push(entry_str);
+        }
+    }
+    if !merged_path_entries.is_empty() {
+        env_vars.insert("PATH".to_string(), merged_path_entries.join(":"));
     }
     if !blocked_runtime_overrides.is_empty() {
         warn!(
