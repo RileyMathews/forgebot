@@ -78,12 +78,12 @@ Isolated per-issue working directories. Must work before opencode can be invoked
 
 Builds the subprocess environment before opencode is spawned.
 
-- [ ] Create `src/session/env_loader.rs`
-- [ ] Implement `load_env(loader_type, worktree_path) -> Result<HashMap<String, String>>` with three branches:
+- [x] Create `src/session/env_loader.rs`
+- [x] Implement `load_env(loader_type, worktree_path) -> Result<HashMap<String, String>>` with three branches:
   - `none` — returns empty map (caller merges with process env)
   - `direnv` — spawns `direnv export json` in worktree, parses JSON output, returns map; hard-fails with full stderr on non-zero exit or parse error
   - `nix` — spawns `nix print-dev-env --json` in worktree, extracts only `type == "exported"` string variables, returns map; hard-fails on error; apply a 60-second timeout
-- [ ] Confirm: test each branch against a real worktree with a `.envrc` or `flake.nix`
+- [x] Confirm: test each branch against a real worktree with a `.envrc` or `flake.nix`
 
 ---
 
