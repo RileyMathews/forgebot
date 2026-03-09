@@ -82,10 +82,8 @@
             inherit system;
             overlays = [];
           };
-
-          # Try to get opencode from nixpkgs, but allow it to be missing
-          opencodePkg = pkgs.opencode or null;
         in
+
         pkgs.mkShell {
           nativeBuildInputs = with pkgs; [
             pkg-config
@@ -106,18 +104,10 @@
             openssl
             sqlite
 
-            # Runtime dependency for the service
-            opencodePkg
           ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
             pkgs.darwin.apple_sdk.frameworks.Security
             pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
-          ] ++ pkgs.lib.optional (opencodePkg == null) (
-            pkgs.writeShellScriptBin "opencode" ''
-              echo "Warning: opencode not available in nixpkgs. Please install manually." >&2
-              exit 1
-            ''
-          );
-
+          ];
           shellHook = ''
             echo "Forgebot development shell"
             echo "Rust version: $(rustc --version)"
