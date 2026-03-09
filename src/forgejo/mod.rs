@@ -45,7 +45,7 @@ impl ForgejoClient {
         let path = if path.starts_with('/') {
             path.to_string()
         } else {
-            format!("/ {}", path)
+            format!("/{}", path)
         };
         format!("{}{}", self.base_url, path)
     }
