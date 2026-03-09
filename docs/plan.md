@@ -53,11 +53,11 @@ The thin HTTP client forgebot uses to talk to Forgejo (separate from the tools o
 
 Get the HTTP server running and accepting webhooks, before implementing any handler logic.
 
-- [ ] Create `src/webhook/models.rs` — structs for all Forgejo webhook payloads: `IssueCommentPayload`, `PullRequestPayload`, `PullRequestReviewCommentPayload`; include the `X-Gitea-Event` header enum
-- [ ] Create `src/webhook/mod.rs` — axum router at `POST /webhook`; HMAC-SHA256 signature verification middleware that reads raw bytes, verifies against `config.server.webhook_secret`, returns 401 on failure before any further processing (spec §18 note 1)
-- [ ] Create `src/webhook/handlers.rs` — single dispatcher that reads `X-Gitea-Event` header and routes to stub handler functions; all stubs return 200 immediately
-- [ ] Wire router into `main.rs`, bind to configured host/port
-- [ ] Confirm: server starts, a correctly signed test webhook returns 200, a bad signature returns 401
+- [x] Create `src/webhook/models.rs` — structs for all Forgejo webhook payloads: `IssueCommentPayload`, `PullRequestPayload`, `PullRequestReviewCommentPayload`; include the `X-Gitea-Event` header enum
+- [x] Create `src/webhook/mod.rs` — axum router at `POST /webhook`; HMAC-SHA256 signature verification middleware that reads raw bytes, verifies against `config.server.webhook_secret`, returns 401 on failure before any further processing (spec §18 note 1)
+- [x] Create `src/webhook/handlers.rs` — single dispatcher that reads `X-Gitea-Event` header and routes to stub handler functions; all stubs return 200 immediately
+- [x] Wire router into `main.rs`, bind to configured host/port
+- [x] Confirm: server starts, a correctly signed test webhook returns 200, a bad signature returns 401
 
 ---
 
