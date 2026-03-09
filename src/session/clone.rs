@@ -90,7 +90,13 @@ pub async fn perform_clone(db: &DbPool, config: &Arc<Config>, repo_full_name: &s
     }
 
     // Construct the clone URL
-    let clone_url = format!("https://{}/{}.git", config.forgejo.url, repo_full_name);
+    // Handle both cases: URL with or without protocol prefix
+    let forgejo_url = config.forgejo.url.trim_end_matches('/');
+    let clone_url = if forgejo_url.starts_with("http://") || forgejo_url.starts_with("https://") {
+        format!("{}/{}.git", forgejo_url, repo_full_name)
+    } else {
+        format!("https://{}/{}.git", forgejo_url, repo_full_name)
+    };
 
     // Ensure parent directory exists
     let parent_dir = bare_path
@@ -252,21 +258,93 @@ mod tests {
         let config = test_config();
         let repo_full_name = "alice/myrepo";
 
-        let expected_url = format!("https://{}/{}.git", config.forgejo.url, repo_full_name);
-        assert_eq!(expected_url, "https://git.example.com/alice/myrepo.git");
+        // Test the URL construction logic (same as production code)
+        let forgejo_url = config.forgejo.url.trim_end_matches('/');
+        let clone_url = if forgejo_url.starts_with("http://") || forgejo_url.starts_with("https://") {
+            format!("{}/{}.git", forgejo_url, repo_full_name)
+        } else {
+            format!("https://{}/{}.git", forgejo_url, repo_full_name)
+        };
+        
+        assert_eq!(clone_url, "https://git.example.com/alice/myrepo.git");
     }
 
     #[test]
-    fn test_clone_url_with_special_characters() {
-        let config = test_config();
+    fn test_clone_url_with_full_url_input() {
+        // Test with URL that already has https:// prefix (like from .envrc)
+        let config_with_https = Config {
+            server: crate::config::ServerConfig {
+                host: "127.0.0.1".to_string(),
+                port: 8765,
+                webhook_secret: "test_secret".to_string(),
+                forgebot_host: "http://localhost:8765".to_string(),
+            },
+            forgejo: crate::config::ForgejoConfig {
+                url: "https://git.rileymathews.com".to_string(),
+                token: "test_token".to_string(),
+                bot_username: "forgebot".to_string(),
+            },
+            opencode: crate::config::OpencodeConfig {
+                binary: "opencode".to_string(),
+                worktree_base: PathBuf::from("/tmp/forgebot-test-worktrees"),
+                config_dir: PathBuf::from("/tmp/forgebot-test-config"),
+                git_binary: "git".to_string(),
+            },
+            database: crate::config::DatabaseConfig {
+                path: PathBuf::from("/tmp/forgebot-test.db"),
+            },
+        };
 
-        // Test with hyphens and underscores
-        let repo_full_name = "my-org/repo_name-v1";
-        let expected_url = format!("https://{}/{}.git", config.forgejo.url, repo_full_name);
-        assert_eq!(
-            expected_url,
-            "https://git.example.com/my-org/repo_name-v1.git"
-        );
+        let repo_full_name = "riley/pr-tracker-rust";
+        let forgejo_url = config_with_https.forgejo.url.trim_end_matches('/');
+        let clone_url = if forgejo_url.starts_with("http://") || forgejo_url.starts_with("https://") {
+            format!("{}/{}.git", forgejo_url, repo_full_name)
+        } else {
+            format!("https://{}/{}.git", forgejo_url, repo_full_name)
+        };
+
+        // Should NOT have double https://
+        assert_eq!(clone_url, "https://git.rileymathews.com/riley/pr-tracker-rust.git");
+        assert!(!clone_url.contains("https://https://"));
+    }
+
+    #[test]
+    fn test_clone_url_with_trailing_slash() {
+        // Test with URL that has trailing slash
+        let config_with_slash = Config {
+            server: crate::config::ServerConfig {
+                host: "127.0.0.1".to_string(),
+                port: 8765,
+                webhook_secret: "test_secret".to_string(),
+                forgebot_host: "http://localhost:8765".to_string(),
+            },
+            forgejo: crate::config::ForgejoConfig {
+                url: "https://git.example.com/".to_string(),
+                token: "test_token".to_string(),
+                bot_username: "forgebot".to_string(),
+            },
+            opencode: crate::config::OpencodeConfig {
+                binary: "opencode".to_string(),
+                worktree_base: PathBuf::from("/tmp/forgebot-test-worktrees"),
+                config_dir: PathBuf::from("/tmp/forgebot-test-config"),
+                git_binary: "git".to_string(),
+            },
+            database: crate::config::DatabaseConfig {
+                path: PathBuf::from("/tmp/forgebot-test.db"),
+            },
+        };
+
+        let repo_full_name = "alice/myrepo";
+        let forgejo_url = config_with_slash.forgejo.url.trim_end_matches('/');
+        let clone_url = if forgejo_url.starts_with("http://") || forgejo_url.starts_with("https://") {
+            format!("{}/{}.git", forgejo_url, repo_full_name)
+        } else {
+            format!("https://{}/{}.git", forgejo_url, repo_full_name)
+        };
+
+        // Should NOT have double slash
+        assert_eq!(clone_url, "https://git.example.com/alice/myrepo.git");
+        assert!(!clone_url.contains("//alice"));
     }
 
     #[test]
