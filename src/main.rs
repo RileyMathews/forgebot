@@ -5,6 +5,7 @@ use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 
 mod config;
+mod db;
 
 #[derive(Parser, Debug)]
 #[command(name = "forgebot")]
@@ -45,8 +46,18 @@ async fn main() -> Result<()> {
     info!("Worktree base: {}", config.opencode.worktree_base.display());
     info!("Opencode binary: {}", config.opencode.binary);
 
-    // For Phase 1, we just exit cleanly
-    info!("forgebot scaffold initialized successfully. Exiting.");
+    // Initialize database
+    let db_pool = db::init_db(&config.database)
+        .await
+        .context("Failed to initialize database")?;
+
+    info!("Database initialized successfully");
+
+    // For Phase 2, verify database is working and exit cleanly
+    info!("forgebot Phase 2 database setup complete. Exiting.");
+
+    // Close the database pool gracefully
+    db_pool.close().await;
 
     Ok(())
 }
