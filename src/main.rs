@@ -1,11 +1,12 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::path::PathBuf;
-use tracing::{info, Level};
+use tracing::{error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 
 mod config;
 mod db;
+pub mod forgejo;
 
 #[derive(Parser, Debug)]
 #[command(name = "forgebot")]
@@ -52,6 +53,38 @@ async fn main() -> Result<()> {
         .context("Failed to initialize database")?;
 
     info!("Database initialized successfully");
+
+    // Phase 3: Uncomment the following to test the Forgejo API client
+    // 
+    // // Create Forgejo client using config
+    // let client = forgejo::ForgejoClient::new(
+    //     &config.forgejo.url,
+    //     &config.forgejo.token,
+    //     &config.forgejo.bot_username,
+    // ).context("Failed to create Forgejo client")?;
+    //
+    // // Test: List webhooks for a repo (change "owner/repo" to your test repo)
+    // match client.list_repo_webhooks("owner/repo").await {
+    //     Ok(webhooks) => {
+    //         info!("Found {} webhooks", webhooks.len());
+    //         for webhook in &webhooks {
+    //             info!("  Webhook {}: {} (active: {})", webhook.id, webhook.url, webhook.active);
+    //         }
+    //     }
+    //     Err(e) => {
+    //         error!("Failed to list webhooks: {}", e);
+    //     }
+    // }
+    //
+    // // Test: Check token permissions
+    // match client.check_token_permissions("owner/repo").await {
+    //     Ok(has_perms) => {
+    //         info!("Token has permissions: {}", has_perms);
+    //     }
+    //     Err(e) => {
+    //         error!("Failed to check permissions: {}", e);
+    //     }
+    // }
 
     // For Phase 2, verify database is working and exit cleanly
     info!("forgebot Phase 2 database setup complete. Exiting.");
