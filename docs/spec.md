@@ -348,7 +348,7 @@ FORGEBOT_FORGEJO_TOKEN
 FORGEBOT_REPO
 FORGEBOT_ISSUE_ID
 FORGEBOT_PR_ID            # if in revision phase
-OPENCODE_CONFIG_HOME      # points to <opencode_config_dir> from config
+OPENCODE_CONFIG_DIR       # points to <opencode_config_dir> from config (custom agents/tools)
 ```
 
 ---
@@ -519,7 +519,15 @@ Repos are not declared in `forgebot.toml`. They are registered entirely through 
 
 forgebot maintains a **global opencode config directory** at the path set by `opencode.config_dir` in `forgebot.toml` (e.g. `/var/lib/forgebot/opencode-config`). This directory is written once on first startup and reused for every opencode invocation across all repos and sessions. Nothing is written into individual worktrees.
 
-forgebot passes `OPENCODE_CONFIG_HOME=<config_dir>` to every opencode subprocess, causing opencode to load its agent definitions and custom tools from this shared location instead of its default user config path.
+forgebot sets several environment variables to control where opencode looks for its configuration:
+
+1. **`XDG_DATA_HOME`** - Controls where opencode stores its data files, including the critical `auth.json` file at `$XDG_DATA_HOME/opencode/auth.json` which contains API credentials.
+
+2. **`XDG_CONFIG_HOME`** - Controls where opencode looks for global configuration at `$XDG_CONFIG_HOME/opencode/opencode.json`.
+
+3. **`OPENCODE_CONFIG_DIR`** - Points to `<config_dir>/opencode/.opencode` for custom agents, tools, and plugins specific to forgebot.
+
+The systemd service sets these to paths under the forgebot data directory, ensuring isolation from the user's personal opencode configuration.
 
 ### Directory Layout
 

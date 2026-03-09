@@ -110,7 +110,7 @@ The core of forgebot — spawning opencode and managing its lifecycle.
 - [x] Implement `derive_session_id(repo_full_name, issue_id) -> String` — produces `ses_{issue_id}_{sanitized_owner}_{sanitized_repo}` (lowercase, non-alphanumeric stripped)
 - [x] Implement `build_prompt(phase, issue, comments, pr_review_comments) -> String` — constructs the full prompt string for each of the three phases using the templates in spec §11
 - [x] Implement `run_opencode(config, session_id, agent_mode, worktree_path, prompt, env_extras) -> Result<()>`:
-  - Merges environment: process env + loader output + `FORGEBOT_*` vars + `OPENCODE_CONFIG_HOME`
+  - Merges environment: process env + loader output + `FORGEBOT_*` vars + `OPENCODE_CONFIG_DIR` + `XDG_DATA_HOME` + `XDG_CONFIG_HOME`
   - Spawns `opencode run --session <id> --agent <plan|build> --cwd <path> --quiet "<prompt>"` via `tokio::process::Command`
   - Awaits exit; returns `Ok(())` on exit code 0, `Err` on non-zero
 - [x] Implement `dispatch_session(db, forgejo, config, trigger)` — the full orchestration sequence for a trigger: load env, build prompt, update state to planning/building, spawn opencode in background `tokio::spawn`, await exit, update state to idle or error, post error comment if needed (spec §18 notes 2 and 3)

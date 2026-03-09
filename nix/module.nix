@@ -289,7 +289,11 @@ in
         "d '${cfg.dataDir}' 0755 ${cfg.user} ${cfg.group} -"
         "d '${cfg.opencode.worktreeBase}' 0755 ${cfg.user} ${cfg.group} -"
         "d '${cfg.opencode.configDir}' 0755 ${cfg.user} ${cfg.group} -"
-        "d '${cfg.dataDir}/.opencode' 0700 ${cfg.user} ${cfg.group} -"
+        # XDG directories for opencode
+        "d '${cfg.dataDir}/data' 0755 ${cfg.user} ${cfg.group} -"
+        "d '${cfg.dataDir}/data/opencode' 0755 ${cfg.user} ${cfg.group} -"
+        "d '${cfg.dataDir}/config' 0755 ${cfg.user} ${cfg.group} -"
+        "d '${cfg.dataDir}/config/opencode' 0755 ${cfg.user} ${cfg.group} -"
       ];
 
       # Define the systemd service
@@ -307,30 +311,41 @@ in
             exit 1
           fi
 
-          # Create opencode config directory
-          mkdir -p ${cfg.dataDir}/.opencode
-          chmod 700 ${cfg.dataDir}/.opencode
+          # Create XDG directories for opencode
+          mkdir -p ${cfg.dataDir}/data/opencode
+          mkdir -p ${cfg.dataDir}/config/opencode
+          chmod 755 ${cfg.dataDir}/data ${cfg.dataDir}/config
+          chmod 755 ${cfg.dataDir}/data/opencode ${cfg.dataDir}/config/opencode
 
           # Copy credentials file to auth.json with proper permissions
-          # The credentialsFile is expected to be in auth.json format
-          cp "${cfg.opencode.credentialsFile}" ${cfg.dataDir}/.opencode/auth.json
-          chmod 600 ${cfg.dataDir}/.opencode/auth.json
-          chown ${cfg.user}:${cfg.group} ${cfg.dataDir}/.opencode/auth.json
+          # auth.json MUST be at $XDG_DATA_HOME/opencode/auth.json
+          cp "${cfg.opencode.credentialsFile}" ${cfg.dataDir}/data/opencode/auth.json
+          chmod 600 ${cfg.dataDir}/data/opencode/auth.json
+          chown ${cfg.user}:${cfg.group} ${cfg.dataDir}/data/opencode/auth.json
 
-          # Generate config.json with model selection
-          cat > ${cfg.dataDir}/.opencode/config.json <<EOF
+          # Generate opencode.json with model selection in the config directory
+          cat > ${cfg.dataDir}/config/opencode/opencode.json <<EOF
           {
             "$$schema": "https://opencode.ai/config.json",
             "model": "${cfg.opencode.model}"
           }
           EOF
-          chmod 644 ${cfg.dataDir}/.opencode/config.json
-          chown ${cfg.user}:${cfg.group} ${cfg.dataDir}/.opencode/config.json
+          chmod 644 ${cfg.dataDir}/config/opencode/opencode.json
+          chown ${cfg.user}:${cfg.group} ${cfg.dataDir}/config/opencode/opencode.json
+
+          # Link forgebot's custom opencode config (agents, tools, etc.) to the XDG config dir
+          # This makes them available to opencode via OPENCODE_CONFIG_DIR
+          if [ -d "${cfg.opencode.configDir}" ]; then
+            mkdir -p ${cfg.dataDir}/config/opencode/.opencode
+            cp -r ${cfg.opencode.configDir}/* ${cfg.dataDir}/config/opencode/.opencode/ 2>/dev/null || true
+            chown -R ${cfg.user}:${cfg.group} ${cfg.dataDir}/config/opencode/.opencode
+          fi
 
           echo "Opencode configuration generated:"
           echo "  - Model: ${cfg.opencode.model}"
-          echo "  - Auth file: ${cfg.dataDir}/.opencode/auth.json"
-          echo "  - Config file: ${cfg.dataDir}/.opencode/config.json"
+          echo "  - Auth file: ${cfg.dataDir}/data/opencode/auth.json (via XDG_DATA_HOME)"
+          echo "  - Config file: ${cfg.dataDir}/config/opencode/opencode.json (via XDG_CONFIG_HOME)"
+          echo "  - Custom config: ${cfg.dataDir}/config/opencode/.opencode (via OPENCODE_CONFIG_DIR)"
         '';
 
         serviceConfig = {
@@ -388,11 +403,14 @@ in
             "FORGEBOT_FORGEJO_BOT_USERNAME=${cfg.forgejo.botUsername}"
             "FORGEBOT_OPENCODE_BINARY=${cfg.opencode.binary}"
             "FORGEBOT_OPENCODE_WORKTREE_BASE=${cfg.opencode.worktreeBase}"
-            "FORGEBOT_OPENCODE_CONFIG_DIR=${cfg.opencode.configDir}"
+            "FORGEBOT_OPENCODE_CONFIG_DIR=${cfg.dataDir}/config/opencode/.opencode"
             "FORGEBOT_OPENCODE_MODEL=${cfg.opencode.model}"
             "FORGEBOT_DATABASE_PATH=${cfg.database.path}"
-            # Opencode configuration home - points to our generated config
-            "OPENCODE_CONFIG_HOME=${cfg.dataDir}/.opencode"
+            # XDG directories for opencode (auth.json goes to $XDG_DATA_HOME/opencode/auth.json)
+            "XDG_DATA_HOME=${cfg.dataDir}/data"
+            "XDG_CONFIG_HOME=${cfg.dataDir}/config"
+            # Opencode-specific config directory (for custom agents/tools)
+            "OPENCODE_CONFIG_DIR=${cfg.dataDir}/config/opencode/.opencode"
           ] 
           ++ lib.optional (cfg.server.forgeBotHost != null) "FORGEBOT_FORGEBOT_HOST=${cfg.server.forgeBotHost}"
           ++ lib.mapAttrsToList (name: value: "${name}=${value}") cfg.environment;

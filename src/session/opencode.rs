@@ -194,8 +194,12 @@ pub async fn run_opencode(params: RunOpencodeParams<'_>) -> Result<Option<String
         "FORGEBOT_REPO".to_string(),
         params.config.forgejo.url.clone(),
     );
+    // Note: XDG_DATA_HOME and XDG_CONFIG_HOME are set by the systemd service
+    // and inherited from the process environment. These control where opencode
+    // looks for auth.json ($XDG_DATA_HOME/opencode/auth.json) and global config.
+    // OPENCODE_CONFIG_DIR is the real variable for custom config directory.
     env_vars.insert(
-        "OPENCODE_CONFIG_HOME".to_string(),
+        "OPENCODE_CONFIG_DIR".to_string(),
         opencode_config_home.display().to_string(),
     );
 
