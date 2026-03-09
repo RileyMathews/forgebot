@@ -17,6 +17,7 @@ use crate::session::{SessionTrigger, build_prompt, derive_session_id};
 use anyhow::{Context, Result, anyhow};
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Stdio;
 use tokio::process::Command;
@@ -243,6 +244,49 @@ pub async fn run_opencode(params: RunOpencodeParams<'_>) -> Result<Option<String
     env_vars.insert(
         "OPENCODE_CONFIG_DIR".to_string(),
         opencode_config_home.display().to_string(),
+    );
+
+    // Configure non-interactive git HTTPS auth using the Forgejo token.
+    // The token is already present in FORGEBOT_FORGEJO_TOKEN. This askpass script
+    // returns bot username for username prompts and token for password prompts.
+    let askpass_path = worktree_path.join(".forgebot-git-askpass.sh");
+    std::fs::write(
+        &askpass_path,
+        r#"#!/bin/sh
+prompt="$1"
+case "$prompt" in
+  *Username*|*username*)
+    printf '%s\n' "${FORGEBOT_FORGEJO_BOT_USERNAME:-forgebot}"
+    ;;
+  *)
+    printf '%s\n' "${FORGEBOT_FORGEJO_TOKEN:-}"
+    ;;
+esac
+"#,
+    )
+    .with_context(|| {
+        format!(
+            "failed to write git askpass script at {}",
+            askpass_path.display()
+        )
+    })?;
+    std::fs::set_permissions(&askpass_path, std::fs::Permissions::from_mode(0o700)).with_context(
+        || {
+            format!(
+                "failed to set executable permissions on {}",
+                askpass_path.display()
+            )
+        },
+    )?;
+
+    env_vars.insert("GIT_TERMINAL_PROMPT".to_string(), "0".to_string());
+    env_vars.insert(
+        "GIT_ASKPASS".to_string(),
+        askpass_path.display().to_string(),
+    );
+    env_vars.insert(
+        "SSH_ASKPASS".to_string(),
+        askpass_path.display().to_string(),
     );
 
     if let Ok(home) = std::env::var("HOME") {
