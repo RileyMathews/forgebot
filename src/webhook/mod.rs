@@ -63,12 +63,18 @@ impl WebhookVerifier {
     /// Verify signature from header
     pub fn verify_signature(&self, body: &[u8], signature_header: &str) -> bool {
         let expected = self.compute_signature(body);
+        // Handle both "sha256=..." and raw hex formats (Forgejo sends raw)
+        let signature = if signature_header.starts_with("sha256=") {
+            signature_header.to_string()
+        } else {
+            format!("sha256={}", signature_header)
+        };
         // Constant-time comparison to prevent timing attacks
-        if expected.len() != signature_header.len() {
+        if expected.len() != signature.len() {
             return false;
         }
         let mut result = 0u8;
-        for (a, b) in expected.bytes().zip(signature_header.bytes()) {
+        for (a, b) in expected.bytes().zip(signature.bytes()) {
             result |= a ^ b;
         }
         result == 0

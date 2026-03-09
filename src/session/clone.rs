@@ -260,12 +260,13 @@ mod tests {
 
         // Test the URL construction logic (same as production code)
         let forgejo_url = config.forgejo.url.trim_end_matches('/');
-        let clone_url = if forgejo_url.starts_with("http://") || forgejo_url.starts_with("https://") {
+        let clone_url = if forgejo_url.starts_with("http://") || forgejo_url.starts_with("https://")
+        {
             format!("{}/{}.git", forgejo_url, repo_full_name)
         } else {
             format!("https://{}/{}.git", forgejo_url, repo_full_name)
         };
-        
+
         assert_eq!(clone_url, "https://git.example.com/alice/myrepo.git");
     }
 
@@ -297,14 +298,18 @@ mod tests {
 
         let repo_full_name = "riley/pr-tracker-rust";
         let forgejo_url = config_with_https.forgejo.url.trim_end_matches('/');
-        let clone_url = if forgejo_url.starts_with("http://") || forgejo_url.starts_with("https://") {
+        let clone_url = if forgejo_url.starts_with("http://") || forgejo_url.starts_with("https://")
+        {
             format!("{}/{}.git", forgejo_url, repo_full_name)
         } else {
             format!("https://{}/{}.git", forgejo_url, repo_full_name)
         };
 
         // Should NOT have double https://
-        assert_eq!(clone_url, "https://git.rileymathews.com/riley/pr-tracker-rust.git");
+        assert_eq!(
+            clone_url,
+            "https://git.rileymathews.com/riley/pr-tracker-rust.git"
+        );
         assert!(!clone_url.contains("https://https://"));
     }
 
@@ -336,7 +341,8 @@ mod tests {
 
         let repo_full_name = "alice/myrepo";
         let forgejo_url = config_with_slash.forgejo.url.trim_end_matches('/');
-        let clone_url = if forgejo_url.starts_with("http://") || forgejo_url.starts_with("https://") {
+        let clone_url = if forgejo_url.starts_with("http://") || forgejo_url.starts_with("https://")
+        {
             format!("{}/{}.git", forgejo_url, repo_full_name)
         } else {
             format!("https://{}/{}.git", forgejo_url, repo_full_name)
