@@ -229,8 +229,11 @@ pub async fn dispatch_session(
     let session_id = derive_session_id(&trigger.repo_full_name, trigger.issue_id);
 
     info!(
-        "Dispatching session {} for {} issue {} (action: {})",
-        session_id, trigger.repo_full_name, trigger.issue_id, trigger.action
+        session_id = %session_id,
+        agent_mode = %trigger.action,
+        repo = %trigger.repo_full_name,
+        issue_id = %trigger.issue_id,
+        "Dispatching session"
     );
 
     // 1. Fetch issue details from Forgejo
@@ -253,6 +256,7 @@ pub async fn dispatch_session(
 
     // 3. Fetch PR review comments if in revision phase
     let pr_review_comments = if trigger.action == "revision" && trigger.pr_id.is_some() {
+        // Safe to unwrap: guarded by is_some() check above
         let pr_id = trigger.pr_id.unwrap();
         match forgejo.list_pr_review_comments(&trigger.repo_full_name, pr_id).await {
             Ok(comments) => comments,
@@ -306,11 +310,17 @@ pub async fn dispatch_session(
     let env_extras = match env_loader::load_env("none", &config.opencode.worktree_base).await {
         Ok(env) => env,
         Err(e) => {
-            error!("Failed to load environment for session {}: {}", session_id, e);
+            let error_str = e.to_string();
+            error!("Environment loading failed for session {}: {}", session_id, error_str);
             let _ = forgejo.post_issue_comment(
                 &trigger.repo_full_name,
                 trigger.issue_id,
-                &format!("❌ Environment loading failed: {}. Session set to error state.", e),
+                &format!(
+                    "❌ forgebot: env loader failed and the session cannot continue. \
+Fix the loader configuration and re-trigger when ready. \
+Error output: {}",
+                    error_str
+                ),
             ).await;
             
             // Set state to error if session exists
@@ -318,7 +328,7 @@ pub async fn dispatch_session(
                 let _ = update_session_state(db, &session.id, "error").await;
             }
             
-            return Err(anyhow!("Environment loading failed: {}", e));
+            return Err(anyhow!("Environment loading failed: {}", error_str));
         }
     };
 
@@ -395,7 +405,12 @@ pub async fn dispatch_session(
     }
 
     // 14. Spawn opencode
-    info!("Spawning opencode for session {} with agent mode {}", session_id, agent_mode);
+    info!(
+        session_id = %session_id,
+        agent_mode = %agent_mode,
+        worktree_path = %worktree_path.display(),
+        "Spawning opencode"
+    );
     
     let opencode_result = run_opencode(
         config,
@@ -409,7 +424,11 @@ pub async fn dispatch_session(
     // 15. Handle result
     match opencode_result {
         Ok(()) => {
-            info!("opencode completed successfully for session {}", session_id);
+            info!(
+                session_id = %session_id,
+                exit_code = 0,
+                "Session completed successfully"
+            );
             update_session_state(db, &session_record.id, "idle").await?;
             
             let success_msg = match trigger.action.as_str() {
@@ -423,12 +442,17 @@ pub async fn dispatch_session(
             Ok(())
         }
         Err(e) => {
-            error!("opencode failed for session {}: {}", session_id, e);
+            let error_str = e.to_string();
+            error!(
+                session_id = %session_id,
+                error = %error_str,
+                "Session failed"
+            );
             update_session_state(db, &session_record.id, "error").await?;
             
             let error_msg = format!(
                 "❌ Task failed. Error: {}\n\nSession set to error state. Please re-trigger when ready.",
-                e
+                error_str
             );
             let _ = forgejo.post_issue_comment(&trigger.repo_full_name, trigger.issue_id, &error_msg).await;
             
@@ -455,7 +479,7 @@ pub async fn startup_crash_recovery(
     db: &DbPool,
     forgejo: &ForgejoClient,
     _config: &Config,
-) -> Result<()> {
+) -> Result<usize> {
     info!("Running startup crash recovery...");
 
     let stuck_states = ["planning", "building", "revising"];
@@ -463,41 +487,42 @@ pub async fn startup_crash_recovery(
         Ok(sessions) => sessions,
         Err(e) => {
             error!("Failed to query stuck sessions: {}", e);
-            return Ok(()); // Non-blocking
+            return Ok(0); // Non-blocking
         }
     };
 
     if stuck_sessions.is_empty() {
         info!("No stuck sessions found, crash recovery complete");
-        return Ok(());
+        return Ok(0);
     }
 
+    let session_count = stuck_sessions.len();
     info!(
-        "Found {} session(s) stuck in progress, recovering...",
-        stuck_sessions.len()
+        session_count = %session_count,
+        "Found sessions stuck in progress, recovering"
     );
 
     for session in stuck_sessions {
         warn!(
-            "Recovering stuck session {} (state: {}) for {} issue {}",
-            session.id, session.state, session.repo_full_name, session.issue_id
+            session_id = %session.id,
+            state = %session.state,
+            repo = %session.repo_full_name,
+            issue_id = %session.issue_id,
+            "Recovering stuck session"
         );
 
         // Set state to error
         if let Err(e) = update_session_state(db, &session.id, "error").await {
             error!(
-                "Failed to set session {} to error state: {}",
-                session.id, e
+                session_id = %session.id,
+                error = %e,
+                "Failed to set session to error state"
             );
             continue;
         }
 
         // Post recovery comment
-        let recovery_msg = format!(
-            "❌ forgebot restarted while working on issue #{issue}. Session was in state `{state}`. Please re-trigger when ready.",
-            issue = session.issue_id,
-            state = session.state
-        );
+        let recovery_msg = "⚠️ forgebot restarted mid-run. The session has been reset. Please retry your command.";
 
         if let Err(e) = forgejo
             .post_issue_comment(&session.repo_full_name, session.issue_id as u64, &recovery_msg)
@@ -509,14 +534,17 @@ pub async fn startup_crash_recovery(
             );
         } else {
             info!(
-                "Posted recovery comment for session {}",
-                session.id
+                session_id = %session.id,
+                "Posted recovery comment"
             );
         }
     }
 
-    info!("Crash recovery complete");
-    Ok(())
+    info!(
+        recovered_count = %session_count,
+        "Crash recovery complete"
+    );
+    Ok(session_count)
 }
 
 #[cfg(test)]

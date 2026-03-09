@@ -51,8 +51,9 @@ impl WebhookVerifier {
     /// Compute HMAC-SHA256 signature for request body
     pub fn compute_signature(&self, body: &[u8]) -> String {
         type HmacSha256 = Hmac<Sha256>;
+        // HMAC-SHA256 can accept keys of any size, so this expect is safe
         let mut mac = HmacSha256::new_from_slice(self.secret.as_bytes())
-            .expect("HMAC can take key of any size");
+            .expect("HMAC-SHA256 accepts keys of any size; this cannot fail");
         mac.update(body);
         let result = mac.finalize();
         let bytes = result.into_bytes();
@@ -100,6 +101,7 @@ pub async fn extract_and_verify_body(
             Ok(s) => s.to_string(),
             Err(_) => {
                 warn!("Invalid X-Gitea-Signature header encoding");
+                // Response::builder() with standard strings cannot fail; unwrap is safe
                 return Err(Response::builder()
                     .status(StatusCode::UNAUTHORIZED)
                     .body("Invalid signature header encoding".into())
@@ -108,6 +110,7 @@ pub async fn extract_and_verify_body(
         },
         None => {
             warn!("Missing X-Gitea-Signature header");
+            // Response::builder() with standard strings cannot fail; unwrap is safe
             return Err(Response::builder()
                 .status(StatusCode::UNAUTHORIZED)
                 .body("Missing signature header".into())
@@ -123,6 +126,7 @@ pub async fn extract_and_verify_body(
         .await
         .map_err(|e| {
             error!("Failed to read request body: {}", e);
+            // Response::builder() with standard strings cannot fail; unwrap is safe
             Response::builder()
                 .status(StatusCode::BAD_REQUEST)
                 .body("Failed to read body".into())
@@ -131,14 +135,22 @@ pub async fn extract_and_verify_body(
 
     // Verify signature
     if !verifier.verify_signature(&bytes, &signature) {
-        warn!("Invalid webhook signature");
+        warn!(
+            signature_valid = false,
+            "Webhook signature verification failed"
+        );
+        // Response::builder() with standard strings cannot fail; unwrap is safe
         return Err(Response::builder()
             .status(StatusCode::UNAUTHORIZED)
             .body("Invalid signature".into())
             .unwrap());
     }
 
-    debug!("Webhook signature verified successfully, event: {}", event_type);
+    debug!(
+        event_type = %event_type,
+        signature_valid = true,
+        "Webhook signature verified successfully"
+    );
     Ok((bytes, event_type))
 }
 
@@ -156,7 +168,7 @@ async fn webhook_handler(
         Err(response) => return response,
     };
 
-    info!("Received webhook event: {}", event_type);
+    info!(event_type = %event_type, "Received webhook event");
 
     // Dispatch based on event type
     match event_type.as_str() {
@@ -165,6 +177,7 @@ async fn webhook_handler(
                 Ok(p) => p,
                 Err(e) => {
                     error!("Failed to parse issue_comment payload: {}", e);
+                    // Response::builder() with standard strings cannot fail; unwrap is safe
                     return Response::builder()
                         .status(StatusCode::BAD_REQUEST)
                         .body(format!("Invalid JSON: {}", e).into())
@@ -181,6 +194,7 @@ async fn webhook_handler(
                 Ok(p) => p,
                 Err(e) => {
                     error!("Failed to parse pull_request payload: {}", e);
+                    // Response::builder() with standard strings cannot fail; unwrap is safe
                     return Response::builder()
                         .status(StatusCode::BAD_REQUEST)
                         .body(format!("Invalid JSON: {}", e).into())
@@ -197,6 +211,7 @@ async fn webhook_handler(
                 Ok(p) => p,
                 Err(e) => {
                     error!("Failed to parse pull_request_review_comment payload: {}", e);
+                    // Response::builder() with standard strings cannot fail; unwrap is safe
                     return Response::builder()
                         .status(StatusCode::BAD_REQUEST)
                         .body(format!("Invalid JSON: {}", e).into())
@@ -211,6 +226,7 @@ async fn webhook_handler(
         _ => {
             // Unknown event type, return 200 to avoid retries
             warn!("Unknown webhook event type: {}", event_type);
+            // Response::builder() with standard strings cannot fail; unwrap is safe
             handlers::handle_unknown_event(&event_type).await.unwrap_or_else(|e| e)
         }
     }
@@ -223,18 +239,29 @@ pub fn create_webhook_router(state: AppState) -> Router {
         .with_state(state)
 }
 
-/// Start the webhook server
+/// Create the combined app router (webhook + UI)
+pub fn create_app_router(state: AppState) -> Router {
+    // Create the UI router and nest it
+    let ui_router = crate::ui::create_ui_router(state.clone());
+    
+    // Combine webhook and UI routers
+    create_webhook_router(state)
+        .nest("/ui", ui_router)
+}
+
+/// Start the webhook server with UI routes
 pub async fn start_server(state: AppState) -> Result<()> {
     let host = state.config.server.host.clone();
     let port = state.config.server.port;
 
-    let app = create_webhook_router(state);
+    let app = create_app_router(state);
 
     let listener = tokio::net::TcpListener::bind(format!("{}:{}", host, port))
         .await
         .with_context(|| format!("Failed to bind to {}:{}", host, port))?;
 
     info!("Webhook server listening on {}:{}", host, port);
+    info!("UI available at http://{}:{}/ui", host, port);
 
     axum::serve(listener, app)
         .await
