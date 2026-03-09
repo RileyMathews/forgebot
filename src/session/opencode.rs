@@ -185,7 +185,6 @@ pub async fn run_opencode(
         .arg(agent_mode)
         .arg("--dir")
         .arg(worktree_path)
-        .arg("--quiet")
         .arg(prompt)
         .envs(&env_vars)
         .stdout(Stdio::piped())
