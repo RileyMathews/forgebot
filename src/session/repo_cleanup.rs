@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use futures::future;
 use tracing::{info, warn};
 
 use crate::config::Config;
