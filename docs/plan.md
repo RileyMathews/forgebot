@@ -91,15 +91,15 @@ Builds the subprocess environment before opencode is spawned.
 
 Write the global opencode config (agent definition + TypeScript Forgejo tools) on startup.
 
-- [ ] Embed the `opencode-config/` template files into the binary using `include_str!` macros
-- [ ] Create `src/session/opencode.rs` — implement `setup_opencode_config_dir(config)`:
+- [x] Embed the `opencode-config/` template files into the binary using `include_str!` macros
+- [x] Create `src/session/opencode.rs` — implement `setup_opencode_config_dir(config)`:
   - Creates `<opencode_config_dir>/tools/` and `<opencode_config_dir>/agents/` directories
   - Writes `package.json`, `agents/forgebot.md`, `tools/comment-issue.ts`, `tools/comment-pr.ts`, `tools/create-pr.ts` — skips any file that already exists
-- [ ] Call `setup_opencode_config_dir` from `main.rs` on startup, before the server begins accepting requests
-- [ ] Write the three TypeScript tool files (spec §7) into `opencode-config/tools/` in the source tree
-- [ ] Write `opencode-config/package.json` declaring `@opencode-ai/plugin` dependency
-- [ ] Write `opencode-config/agents/forgebot.md` (spec §14)
-- [ ] Confirm: run binary, verify all files appear at the configured path with correct content
+- [x] Call `setup_opencode_config_dir` from `main.rs` on startup, before the server begins accepting requests
+- [x] Write the three TypeScript tool files (spec §7) into `opencode-config/tools/` in the source tree
+- [x] Write `opencode-config/package.json` declaring `@opencode-ai/plugin` dependency
+- [x] Write `opencode-config/agents/forgebot.md` (spec §14)
+- [x] Confirm: run binary, verify all files appear at the configured path with correct content
 
 ---
 
