@@ -29,9 +29,20 @@ async fn main() -> Result<()> {
     session::opencode::setup_opencode_config_dir(&config.opencode)
         .context("Failed to set up opencode config directory")?;
 
+    // Ensure worktree base directory exists
+    tokio::fs::create_dir_all(&config.opencode.worktree_base)
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to create worktree base directory: {}",
+                config.opencode.worktree_base.display()
+            )
+        })?;
+
     info!(
         config_dir = %config.opencode.config_dir.display(),
-        "Opencode config directory initialized"
+        worktree_base = %config.opencode.worktree_base.display(),
+        "Opencode config and worktree directories initialized"
     );
 
     info!(
