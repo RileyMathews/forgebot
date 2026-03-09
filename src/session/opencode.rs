@@ -248,7 +248,8 @@ pub async fn run_opencode(params: RunOpencodeParams<'_>) -> Result<Option<String
         .current_dir(worktree_path)
         .envs(&env_vars)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .stdin(Stdio::null()); // Ensure we don't block waiting for input
 
     info!(
         "Running opencode command: binary={}, resolved_path={}, worktree={}",
@@ -257,8 +258,9 @@ pub async fn run_opencode(params: RunOpencodeParams<'_>) -> Result<Option<String
         worktree_path.display()
     );
 
-    let output = match cmd.output().await {
-        Ok(output) => output,
+    // Spawn the process
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
         Err(e) => {
             error!(
                 "Failed to spawn opencode process: {} (resolved to {}): kind={:?}, os_error={:?}",
@@ -276,16 +278,66 @@ pub async fn run_opencode(params: RunOpencodeParams<'_>) -> Result<Option<String
         }
     };
 
-    let exit_code = output.status.code().unwrap_or(-1);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Take stdout and stderr handles
+    let stdout = child.stdout.take().expect("stdout was piped");
+    let stderr = child.stderr.take().expect("stderr was piped");
+
+    // Create buf readers for streaming output
+    let stdout_reader = tokio::io::BufReader::new(stdout);
+    let stderr_reader = tokio::io::BufReader::new(stderr);
+
+    // Collect output for database storage
+    let stdout_lines = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let stderr_lines = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+
+    let stdout_lines_clone = stdout_lines.clone();
+    let stderr_lines_clone = stderr_lines.clone();
+
+    // Spawn tasks to stream output to logs in real-time
+    let stdout_task = tokio::spawn(async move {
+        use tokio::io::AsyncBufReadExt;
+        let mut lines = stdout_reader.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            info!(target: "opencode_stdout", "{}", line);
+            stdout_lines_clone.lock().await.push(line);
+        }
+    });
+
+    let stderr_task = tokio::spawn(async move {
+        use tokio::io::AsyncBufReadExt;
+        let mut lines = stderr_reader.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            warn!(target: "opencode_stderr", "{}", line);
+            stderr_lines_clone.lock().await.push(line);
+        }
+    });
+
+    // Wait for the process to complete
+    let status = match child.wait().await {
+        Ok(status) => status,
+        Err(e) => {
+            error!("Failed to wait for opencode process: {}", e);
+            // Try to kill the process if it's still running
+            let _ = child.start_kill();
+            return Err(anyhow!("Failed to wait for opencode process: {}", e));
+        }
+    };
+
+    // Wait for output streaming tasks to complete
+    let _ = tokio::join!(stdout_task, stderr_task);
+
+    let exit_code = status.code().unwrap_or(-1);
+
+    // Collect the output for database storage
+    let stdout_collected = stdout_lines.lock().await.join("\n");
+    let stderr_collected = stderr_lines.lock().await.join("\n");
 
     // Save session log to database
     let log_record = crate::db::NewSessionLog {
         id: uuid::Uuid::new_v4().to_string(),
         session_id: session_record_id.to_string(),
-        stdout: stdout.to_string(),
-        stderr: stderr.to_string(),
+        stdout: stdout_collected.clone(),
+        stderr: stderr_collected.clone(),
         exit_code: Some(exit_code as i64),
     };
 
@@ -295,7 +347,7 @@ pub async fn run_opencode(params: RunOpencodeParams<'_>) -> Result<Option<String
     }
 
     // Try to capture the opencode session ID
-    let captured_session_id = if output.status.success() {
+    let captured_session_id = if status.success() {
         match capture_opencode_session_id(binary, derived_session_id).await {
             Ok(Some(id)) => {
                 info!("Captured opencode session ID: {}", id);
@@ -314,19 +366,19 @@ pub async fn run_opencode(params: RunOpencodeParams<'_>) -> Result<Option<String
         None
     };
 
-    if output.status.success() {
+    if status.success() {
         debug!("opencode exited successfully with code 0");
         Ok(captured_session_id)
     } else {
         error!(
             "opencode failed with exit code {}: stdout={}, stderr={}",
-            exit_code, stdout, stderr
+            exit_code, stdout_collected, stderr_collected
         );
         Err(anyhow!(
             "opencode process failed with exit code {}: stdout={}, stderr={}",
             exit_code,
-            stdout,
-            stderr
+            stdout_collected,
+            stderr_collected
         ))
     }
 }
