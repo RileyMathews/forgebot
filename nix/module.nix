@@ -279,6 +279,7 @@ in
         group = cfg.group;
         home = cfg.dataDir;
         createHome = true;
+        shell = pkgs.bashInteractive;
       };
 
       # Create the forgebot group
