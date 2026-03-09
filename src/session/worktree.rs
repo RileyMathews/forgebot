@@ -212,6 +212,7 @@ mod tests {
             worktree_base: PathBuf::from("/var/lib/forgebot/worktrees"),
             config_dir: PathBuf::from("/etc/forgebot"),
             git_binary: "git".to_string(),
+            model: "opencode/claude-3-5-haiku".to_string(),
         }
     }
 

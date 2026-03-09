@@ -127,6 +127,7 @@ pub struct RunOpencodeParams<'a> {
     pub derived_session_id: &'a str,
     pub external_opencode_session_id: Option<&'a str>,
     pub agent_mode: &'a str,
+    pub model: &'a str,
     pub worktree_path: &'a Path,
     pub prompt: &'a str,
     pub env_extras: HashMap<String, String>,
@@ -149,13 +150,14 @@ pub async fn run_opencode(params: RunOpencodeParams<'_>) -> Result<Option<String
     let session_record_id = params.session_record_id;
     let derived_session_id = params.derived_session_id;
     let agent_mode = params.agent_mode;
+    let model = params.model;
     let worktree_path = params.worktree_path;
     let prompt = params.prompt;
     let env_extras = params.env_extras;
 
     debug!(
-        "Spawning opencode: binary={}, derived_session_id={}, agent_mode={}",
-        binary, derived_session_id, agent_mode
+        "Spawning opencode: binary={}, derived_session_id={}, agent_mode={}, model={}",
+        binary, derived_session_id, agent_mode, model
     );
 
     // Build environment
@@ -229,6 +231,8 @@ pub async fn run_opencode(params: RunOpencodeParams<'_>) -> Result<Option<String
     cmd.arg("run")
         .arg("--agent")
         .arg(agent_mode)
+        .arg("--model")
+        .arg(model)
         .arg("--title")
         .arg(derived_session_id);
 
@@ -685,6 +689,7 @@ Error output: {}",
         derived_session_id: &session_id,
         external_opencode_session_id: external_session_id,
         agent_mode,
+        model: &config.opencode.model,
         worktree_path: &worktree_path,
         prompt: &prompt,
         env_extras: session_env,
@@ -898,6 +903,7 @@ mod tests {
             worktree_base: temp_dir.join("worktrees"),
             config_dir: temp_dir.clone(),
             git_binary: "git".to_string(),
+            model: "opencode/claude-3-5-haiku".to_string(),
         };
 
         // First call should create all files
@@ -941,6 +947,7 @@ mod tests {
             worktree_base: temp_dir.join("worktrees"),
             config_dir: temp_dir.clone(),
             git_binary: "git".to_string(),
+            model: "opencode/claude-3-5-haiku".to_string(),
         };
 
         // Setup should succeed and not overwrite existing files

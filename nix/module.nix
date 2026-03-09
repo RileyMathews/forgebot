@@ -195,6 +195,45 @@ in
               Do not modify these files manually — they are managed by forgebot.
             '';
           };
+
+          model = lib.mkOption {
+            type = lib.types.str;
+            default = "opencode/claude-3-5-haiku";
+            example = "opencode/claude-sonnet-4-5";
+            description = ''
+              The AI model to use for opencode sessions.
+              Format: "provider/model-name"
+              Examples: 
+                - "opencode/claude-3-5-haiku" (default, lower cost)
+                - "opencode/claude-sonnet-4-5" (good balance of cost/quality)
+                - "opencode/claude-opus-4-6" (highest quality, more expensive)
+                - "opencode/gpt-5" (OpenAI via Zen)
+              
+              See `opencode models` for a full list of available models.
+            '';
+          };
+
+          credentialsFile = lib.mkOption {
+            type = lib.types.path;
+            example = lib.literalExpression "/run/secrets/forgebot-opencode-credentials";
+            description = ''
+              Path to a JSON file containing opencode authentication credentials.
+              This file must be in the format of opencode's auth.json file.
+              
+              For OpenCode Zen (the default), the file should contain:
+              {
+                "opencode": {
+                  "type": "api",
+                  "key": "sk-your-api-key-here"
+                }
+              }
+              
+              For sops-nix integration, use:
+                credentialsFile = config.sops.secrets.forgebot-opencode-credentials.path;
+              
+              Note: This file is required and the service will fail to start if not present.
+            '';
+          };
         };
       };
       default = { };
@@ -250,6 +289,7 @@ in
         "d '${cfg.dataDir}' 0755 ${cfg.user} ${cfg.group} -"
         "d '${cfg.opencode.worktreeBase}' 0755 ${cfg.user} ${cfg.group} -"
         "d '${cfg.opencode.configDir}' 0755 ${cfg.user} ${cfg.group} -"
+        "d '${cfg.dataDir}/.opencode' 0700 ${cfg.user} ${cfg.group} -"
       ];
 
       # Define the systemd service
@@ -258,6 +298,40 @@ in
         wantedBy = [ "multi-user.target" ];
         after = [ "network-online.target" ];
         wants = [ "network-online.target" ];
+
+        preStart = ''
+          # Validate credentials file exists
+          if [ ! -f "${cfg.opencode.credentialsFile}" ]; then
+            echo "ERROR: Opencode credentials file not found: ${cfg.opencode.credentialsFile}"
+            echo "The credentialsFile option must point to a valid JSON file containing opencode auth credentials."
+            exit 1
+          fi
+
+          # Create opencode config directory
+          mkdir -p ${cfg.dataDir}/.opencode
+          chmod 700 ${cfg.dataDir}/.opencode
+
+          # Copy credentials file to auth.json with proper permissions
+          # The credentialsFile is expected to be in auth.json format
+          cp "${cfg.opencode.credentialsFile}" ${cfg.dataDir}/.opencode/auth.json
+          chmod 600 ${cfg.dataDir}/.opencode/auth.json
+          chown ${cfg.user}:${cfg.group} ${cfg.dataDir}/.opencode/auth.json
+
+          # Generate config.json with model selection
+          cat > ${cfg.dataDir}/.opencode/config.json <<EOF
+          {
+            "$$schema": "https://opencode.ai/config.json",
+            "model": "${cfg.opencode.model}"
+          }
+          EOF
+          chmod 644 ${cfg.dataDir}/.opencode/config.json
+          chown ${cfg.user}:${cfg.group} ${cfg.dataDir}/.opencode/config.json
+
+          echo "Opencode configuration generated:"
+          echo "  - Model: ${cfg.opencode.model}"
+          echo "  - Auth file: ${cfg.dataDir}/.opencode/auth.json"
+          echo "  - Config file: ${cfg.dataDir}/.opencode/config.json"
+        '';
 
         serviceConfig = {
           Type = "simple";
@@ -315,7 +389,10 @@ in
             "FORGEBOT_OPENCODE_BINARY=${cfg.opencode.binary}"
             "FORGEBOT_OPENCODE_WORKTREE_BASE=${cfg.opencode.worktreeBase}"
             "FORGEBOT_OPENCODE_CONFIG_DIR=${cfg.opencode.configDir}"
+            "FORGEBOT_OPENCODE_MODEL=${cfg.opencode.model}"
             "FORGEBOT_DATABASE_PATH=${cfg.database.path}"
+            # Opencode configuration home - points to our generated config
+            "OPENCODE_CONFIG_HOME=${cfg.dataDir}/.opencode"
           ] 
           ++ lib.optional (cfg.server.forgeBotHost != null) "FORGEBOT_FORGEBOT_HOST=${cfg.server.forgeBotHost}"
           ++ lib.mapAttrsToList (name: value: "${name}=${value}") cfg.environment;

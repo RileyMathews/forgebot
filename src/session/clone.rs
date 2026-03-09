@@ -246,6 +246,7 @@ mod tests {
                 worktree_base: PathBuf::from("/tmp/forgebot-test-worktrees"),
                 config_dir: PathBuf::from("/tmp/forgebot-test-config"),
                 git_binary: "git".to_string(),
+                model: "opencode/claude-3-5-haiku".to_string(),
             },
             database: crate::config::DatabaseConfig {
                 path: PathBuf::from("/tmp/forgebot-test.db"),
@@ -290,6 +291,7 @@ mod tests {
                 worktree_base: PathBuf::from("/tmp/forgebot-test-worktrees"),
                 config_dir: PathBuf::from("/tmp/forgebot-test-config"),
                 git_binary: "git".to_string(),
+                model: "opencode/claude-3-5-haiku".to_string(),
             },
             database: crate::config::DatabaseConfig {
                 path: PathBuf::from("/tmp/forgebot-test.db"),
@@ -333,6 +335,7 @@ mod tests {
                 worktree_base: PathBuf::from("/tmp/forgebot-test-worktrees"),
                 config_dir: PathBuf::from("/tmp/forgebot-test-config"),
                 git_binary: "git".to_string(),
+                model: "opencode/claude-3-5-haiku".to_string(),
             },
             database: crate::config::DatabaseConfig {
                 path: PathBuf::from("/tmp/forgebot-test.db"),

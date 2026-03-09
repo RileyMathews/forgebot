@@ -102,6 +102,63 @@ FORGEBOT_WEBHOOK_SECRET=your-webhook-secret-here
 FORGEBOT_FORGEJO_TOKEN=your-forgejo-api-token
 ```
 
+### 2.1 Configure Opencode Credentials
+
+forgebot requires credentials to authenticate with opencode's AI providers. Currently, **OpenCode Zen** is the supported provider.
+
+**Create the credentials JSON file** (e.g., `/run/secrets/forgebot-opencode-credentials`):
+
+```json
+{
+  "opencode": {
+    "type": "api",
+    "key": "sk-your-opencode-zen-api-key-here"
+  }
+}
+```
+
+To obtain your OpenCode Zen API key:
+1. Visit [OpenCode Zen](https://zen.opencode.ai) and sign up/login
+2. Add billing details to your account
+3. Generate an API key from your dashboard
+4. Copy the key (starts with `sk-`)
+
+**Update your NixOS configuration** to use the credentials file:
+
+```nix
+{ config, forgebot, ... }:
+{
+  imports = [
+    forgebot.nixosModules.forgebot
+  ];
+  
+  sops.secrets.forgebot = { };
+  sops.secrets.forgebot-opencode-credentials = { };
+  
+  services.forgebot = {
+    enable = true;
+    forgejo.url = "https://git.example.com";
+    secretsFilePath = config.sops.secrets.forgebot.path;
+    
+    # REQUIRED: Path to opencode credentials JSON file
+    opencode.credentialsFile = config.sops.secrets.forgebot-opencode-credentials.path;
+    
+    # OPTIONAL: Choose a different model (default is opencode/claude-3-5-haiku)
+    # opencode.model = "opencode/claude-sonnet-4-5";  # Better quality, higher cost
+    # opencode.model = "opencode/claude-opus-4-6";  # Best quality, most expensive
+    # opencode.model = "opencode/gpt-5";            # OpenAI via Zen
+  };
+}
+```
+
+**Important**: The credentials file must be in valid JSON format matching opencode's `auth.json` structure. The service will fail to start if the file is missing or invalid.
+
+**Available models** (run `opencode models` to see all):
+- `opencode/claude-3-5-haiku` (default) - Fast, cost-effective
+- `opencode/claude-sonnet-4-5` - Balanced performance and cost
+- `opencode/claude-opus-4-6` - Best quality, higher cost
+- `opencode/gpt-5` - OpenAI GPT-5 via Zen
+
 All other configuration values use sensible defaults:
 - `FORGEBOT_SERVER_HOST`: `127.0.0.1`
 - `FORGEBOT_SERVER_PORT`: `8765`
@@ -110,6 +167,7 @@ All other configuration values use sensible defaults:
 - `FORGEBOT_OPENCODE_BINARY`: `opencode`
 - `FORGEBOT_OPENCODE_WORKTREE_BASE`: `/var/lib/forgebot/worktrees`
 - `FORGEBOT_OPENCODE_CONFIG_DIR`: `/var/lib/forgebot/opencode-config`
+- `FORGEBOT_OPENCODE_MODEL`: `opencode/claude-3-5-haiku`
 - `FORGEBOT_DATABASE_PATH`: `/var/lib/forgebot/forgebot.db`
 
 **Important**: `FORGEBOT_FORGEBOT_HOST` should be set to your public-facing URL for production deployments (e.g., `https://forgebot.example.com`). If not set, it defaults to `http://<server_host>:<server_port>`, which may not be accessible from the internet if the server is bound to localhost.
