@@ -35,17 +35,17 @@ Schema and CRUD before anything else touches state.
 
 The thin HTTP client forgebot uses to talk to Forgejo (separate from the tools opencode uses).
 
-- [ ] Create `src/forgejo/models.rs` — structs for API responses: `Issue`, `IssueComment`, `PullRequest`, `PullRequestReviewComment`, `Webhook`
-- [ ] Create `src/forgejo/mod.rs` — `ForgejoClient` struct wrapping `reqwest::Client`
-- [ ] Implement `get_issue(repo, issue_id)`
-- [ ] Implement `list_issue_comments(repo, issue_id)`
-- [ ] Implement `list_pr_review_comments(repo, pr_id)`
-- [ ] Implement `post_issue_comment(repo, issue_id, body)` — used by forgebot for lifecycle acknowledgements
-- [ ] Implement `post_pr_comment(repo, pr_id, body)` — used for error/busy comments on PRs
-- [ ] Implement `list_repo_webhooks(repo)` — used by setup UI to check webhook registration status
-- [ ] Implement `create_repo_webhook(repo, url, secret)` — used by setup UI one-click registration
-- [ ] Implement `check_token_permissions(repo)` — test call used by setup UI verify step
-- [ ] Confirm: write a quick integration test or `main.rs` throwaway that lists issues on a real repo
+- [x] Create `src/forgejo/models.rs` — structs for API responses: `Issue`, `IssueComment`, `PullRequest`, `PullRequestReviewComment`, `Webhook`
+- [x] Create `src/forgejo/mod.rs` — `ForgejoClient` struct wrapping `reqwest::Client`
+- [x] Implement `get_issue(repo, issue_id)`
+- [x] Implement `list_issue_comments(repo, issue_id)`
+- [x] Implement `list_pr_review_comments(repo, pr_id)`
+- [x] Implement `post_issue_comment(repo, issue_id, body)` — used by forgebot for lifecycle acknowledgements
+- [x] Implement `post_pr_comment(repo, pr_id, body)` — used for error/busy comments on PRs
+- [x] Implement `list_repo_webhooks(repo)` — used by setup UI to check webhook registration status
+- [x] Implement `create_repo_webhook(repo, url, secret)` — used by setup UI one-click registration
+- [x] Implement `check_token_permissions(repo)` — test call used by setup UI verify step
+- [x] Confirm: write a quick integration test or `main.rs` throwaway that lists issues on a real repo
 
 ---
 
