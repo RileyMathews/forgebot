@@ -156,6 +156,11 @@ pub async fn run_opencode(
         env_vars.insert(key, value);
     }
 
+    // Log the PATH for debugging
+    let path = env_vars.get("PATH").cloned().unwrap_or_else(|| "NOT_SET".to_string());
+    info!("Environment PATH: {}", path);
+    info!("Binary name: {}", binary);
+
     // 2. Add env loader output (direnv/nix results)
     for (key, value) in env_extras {
         env_vars.insert(key, value);
@@ -176,8 +181,24 @@ pub async fn run_opencode(
         opencode_config_home.display().to_string(),
     );
 
+    // Resolve binary path from PATH if not an absolute path
+    let binary_path = if binary.contains('/') {
+        binary.to_string()
+    } else {
+        let path_var = env_vars.get("PATH").cloned().unwrap_or_default();
+        let mut found = None;
+        for dir in path_var.split(':') {
+            let candidate = std::path::Path::new(dir).join(binary);
+            if candidate.exists() {
+                found = Some(candidate.to_string_lossy().to_string());
+                break;
+            }
+        }
+        found.unwrap_or_else(|| binary.to_string())
+    };
+
     // Build the command
-    let mut cmd = Command::new(binary);
+    let mut cmd = Command::new(&binary_path);
     cmd.arg("run")
         .arg("--session")
         .arg(session_id)
@@ -189,16 +210,15 @@ pub async fn run_opencode(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    debug!(
-        "Running opencode command: {:?} prompt={}",
-        cmd,
-        prompt.chars().take(100).collect::<String>()
+    info!(
+        "Running opencode command: binary={}, resolved_path={}, worktree={}",
+        binary, binary_path, worktree_path.display()
     );
 
     let output = cmd
         .output()
         .await
-        .with_context(|| format!("Failed to spawn opencode process: {}", binary))?;
+        .with_context(|| format!("Failed to spawn opencode process: {} (resolved to {})", binary, binary_path))?;
 
     let exit_code = output.status.code().unwrap_or(-1);
     let stdout = String::from_utf8_lossy(&output.stdout);
