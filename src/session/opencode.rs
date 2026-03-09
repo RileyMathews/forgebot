@@ -173,9 +173,30 @@ pub async fn run_opencode(params: RunOpencodeParams<'_>) -> Result<Option<String
     info!("Environment PATH: {}", path);
     info!("Binary name: {}", binary);
 
-    // 2. Add env loader output (direnv/nix results)
+    // 2. Add env loader output (direnv/nix results), but keep runtime-critical
+    // paths from the service environment. Nix dev shells often set HOME to
+    // /homeless-shelter, which breaks Bun/opencode under hardened systemd.
+    let mut blocked_runtime_overrides = Vec::new();
     for (key, value) in env_extras {
+        if matches!(
+            key.as_str(),
+            "HOME"
+                | "XDG_DATA_HOME"
+                | "XDG_CONFIG_HOME"
+                | "XDG_CACHE_HOME"
+                | "BUN_INSTALL_CACHE_DIR"
+                | "OPENCODE_CONFIG_DIR"
+        ) {
+            blocked_runtime_overrides.push(format!("{}={}", key, value));
+            continue;
+        }
         env_vars.insert(key, value);
+    }
+    if !blocked_runtime_overrides.is_empty() {
+        warn!(
+            overrides = %blocked_runtime_overrides.join(", "),
+            "Ignored env loader overrides for protected runtime variables"
+        );
     }
 
     // 3. Set FORGEBOT_* vars (always win)
@@ -195,6 +216,31 @@ pub async fn run_opencode(params: RunOpencodeParams<'_>) -> Result<Option<String
     env_vars.insert(
         "OPENCODE_CONFIG_DIR".to_string(),
         opencode_config_home.display().to_string(),
+    );
+
+    if let Ok(home) = std::env::var("HOME") {
+        env_vars.insert("HOME".to_string(), home);
+    }
+    if let Ok(xdg_data_home) = std::env::var("XDG_DATA_HOME") {
+        env_vars.insert("XDG_DATA_HOME".to_string(), xdg_data_home);
+    }
+    if let Ok(xdg_config_home) = std::env::var("XDG_CONFIG_HOME") {
+        env_vars.insert("XDG_CONFIG_HOME".to_string(), xdg_config_home);
+    }
+    if let Ok(xdg_cache_home) = std::env::var("XDG_CACHE_HOME") {
+        env_vars.insert("XDG_CACHE_HOME".to_string(), xdg_cache_home);
+    }
+    if let Ok(bun_cache_dir) = std::env::var("BUN_INSTALL_CACHE_DIR") {
+        env_vars.insert("BUN_INSTALL_CACHE_DIR".to_string(), bun_cache_dir);
+    }
+
+    info!(
+        home = %env_vars.get("HOME").cloned().unwrap_or_else(|| "<unset>".to_string()),
+        xdg_data_home = %env_vars.get("XDG_DATA_HOME").cloned().unwrap_or_else(|| "<unset>".to_string()),
+        xdg_config_home = %env_vars.get("XDG_CONFIG_HOME").cloned().unwrap_or_else(|| "<unset>".to_string()),
+        xdg_cache_home = %env_vars.get("XDG_CACHE_HOME").cloned().unwrap_or_else(|| "<unset>".to_string()),
+        bun_cache_dir = %env_vars.get("BUN_INSTALL_CACHE_DIR").cloned().unwrap_or_else(|| "<unset>".to_string()),
+        "Effective runtime environment for opencode"
     );
 
     // Resolve binary path from PATH if not an absolute path
