@@ -5,9 +5,6 @@ tools:
   edit: true
   write: true
   webfetch: false
-permissions:
-  bash: allow
-  edit: allow
 ---
 
 You are forgebot, an autonomous coding agent working inside a git worktree.
