@@ -1,12 +1,14 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tracing::{error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 
 mod config;
 mod db;
 pub mod forgejo;
+mod webhook;
 
 #[derive(Parser, Debug)]
 #[command(name = "forgebot")]
@@ -54,40 +56,29 @@ async fn main() -> Result<()> {
 
     info!("Database initialized successfully");
 
-    // Phase 3: Uncomment the following to test the Forgejo API client
-    // 
-    // // Create Forgejo client using config
-    // let client = forgejo::ForgejoClient::new(
-    //     &config.forgejo.url,
-    //     &config.forgejo.token,
-    //     &config.forgejo.bot_username,
-    // ).context("Failed to create Forgejo client")?;
-    //
-    // // Test: List webhooks for a repo (change "owner/repo" to your test repo)
-    // match client.list_repo_webhooks("owner/repo").await {
-    //     Ok(webhooks) => {
-    //         info!("Found {} webhooks", webhooks.len());
-    //         for webhook in &webhooks {
-    //             info!("  Webhook {}: {} (active: {})", webhook.id, webhook.url, webhook.active);
-    //         }
-    //     }
-    //     Err(e) => {
-    //         error!("Failed to list webhooks: {}", e);
-    //     }
-    // }
-    //
-    // // Test: Check token permissions
-    // match client.check_token_permissions("owner/repo").await {
-    //     Ok(has_perms) => {
-    //         info!("Token has permissions: {}", has_perms);
-    //     }
-    //     Err(e) => {
-    //         error!("Failed to check permissions: {}", e);
-    //     }
-    // }
+    // Initialize Forgejo client
+    let _forgejo_client = forgejo::ForgejoClient::new(
+        &config.forgejo.url,
+        &config.forgejo.token,
+        &config.forgejo.bot_username,
+    ).context("Failed to create Forgejo client")?;
 
-    // For Phase 2, verify database is working and exit cleanly
-    info!("forgebot Phase 2 database setup complete. Exiting.");
+    info!("Forgejo client initialized successfully");
+
+    // Wrap config in Arc for sharing across handlers
+    let config = Arc::new(config);
+
+    // Start webhook server - this will block until the server shuts down
+    info!("Starting webhook server...");
+    
+    // Note: In Phase 4, the server just listens forever
+    // Phase 5+ will add background workers and graceful shutdown
+    webhook::start_server(config)
+        .await
+        .context("Webhook server failed")?;
+
+    // Server has shut down (normally this only happens on error in Phase 4)
+    info!("Webhook server stopped");
 
     // Close the database pool gracefully
     db_pool.close().await;

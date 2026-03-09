@@ -1,0 +1,241 @@
+pub mod handlers;
+pub mod models;
+
+use anyhow::{Context, Result};
+use axum::{
+    extract::{Request, State},
+    http::StatusCode,
+    response::Response,
+    routing::post,
+    Router,
+};
+use bytes::Bytes;
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+use std::sync::Arc;
+use tracing::{debug, error, info, warn};
+
+use crate::config::Config;
+use models::*;
+
+/// Webhook secret wrapper for sharing across handlers
+pub struct WebhookSecret {
+    pub secret: String,
+}
+
+/// Extractor for verified webhook payload with signature verification
+pub struct VerifiedWebhook<T> {
+    pub event_type: GiteaEvent,
+    pub payload: T,
+}
+
+/// HMAC-SHA256 verification middleware/extractor
+pub struct WebhookVerifier {
+    pub secret: String,
+}
+
+impl WebhookVerifier {
+    pub fn new(secret: String) -> Self {
+        Self { secret }
+    }
+
+    /// Compute HMAC-SHA256 signature for request body
+    pub fn compute_signature(&self, body: &[u8]) -> String {
+        type HmacSha256 = Hmac<Sha256>;
+        let mut mac = HmacSha256::new_from_slice(self.secret.as_bytes())
+            .expect("HMAC can take key of any size");
+        mac.update(body);
+        let result = mac.finalize();
+        let bytes = result.into_bytes();
+        format!("sha256={}", hex::encode(bytes))
+    }
+
+    /// Verify signature from header
+    pub fn verify_signature(&self, body: &[u8], signature_header: &str) -> bool {
+        let expected = self.compute_signature(body);
+        // Constant-time comparison to prevent timing attacks
+        if expected.len() != signature_header.len() {
+            return false;
+        }
+        let mut result = 0u8;
+        for (a, b) in expected.bytes().zip(signature_header.bytes()) {
+            result |= a ^ b;
+        }
+        result == 0
+    }
+}
+
+/// Extract raw body and verify signature
+pub async fn extract_and_verify_body(
+    request: Request,
+    verifier: &WebhookVerifier,
+) -> Result<(Bytes, String), Response> {
+    // Extract headers first before consuming the request
+    let signature_header = request
+        .headers()
+        .get("X-Gitea-Signature")
+        .cloned();
+
+    let event_type_header = request
+        .headers()
+        .get("X-Gitea-Event")
+        .and_then(|h| h.to_str().ok())
+        .map(|s| s.to_string());
+
+    // Now consume the request to get the body
+    let (parts, body) = request.into_parts();
+
+    // Get the signature value
+    let signature = match signature_header {
+        Some(h) => match h.to_str() {
+            Ok(s) => s.to_string(),
+            Err(_) => {
+                warn!("Invalid X-Gitea-Signature header encoding");
+                return Err(Response::builder()
+                    .status(StatusCode::UNAUTHORIZED)
+                    .body("Invalid signature header encoding".into())
+                    .unwrap());
+            }
+        },
+        None => {
+            warn!("Missing X-Gitea-Signature header");
+            return Err(Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .body("Missing signature header".into())
+                .unwrap());
+        }
+    };
+
+    // Get the event type
+    let event_type = event_type_header.unwrap_or_else(|| "unknown".to_string());
+
+    // Extract raw body bytes
+    let bytes = axum::body::to_bytes(body, usize::MAX)
+        .await
+        .map_err(|e| {
+            error!("Failed to read request body: {}", e);
+            Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .body("Failed to read body".into())
+                .unwrap()
+        })?;
+
+    // Verify signature
+    if !verifier.verify_signature(&bytes, &signature) {
+        warn!("Invalid webhook signature");
+        return Err(Response::builder()
+            .status(StatusCode::UNAUTHORIZED)
+            .body("Invalid signature".into())
+            .unwrap());
+    }
+
+    debug!("Webhook signature verified successfully, event: {}", event_type);
+    Ok((bytes, event_type))
+}
+
+/// Handler for POST /webhook
+async fn webhook_handler(
+    State(config): State<Arc<Config>>,
+    request: Request,
+) -> Response {
+    // Create verifier
+    let verifier = WebhookVerifier::new(config.server.webhook_secret.clone());
+
+    // Verify signature and get body
+    let (body, event_type) = match extract_and_verify_body(request, &verifier).await {
+        Ok(result) => result,
+        Err(response) => return response,
+    };
+
+    info!("Received webhook event: {}", event_type);
+
+    // Dispatch based on event type
+    match event_type.as_str() {
+        "issue_comment" => {
+            let payload: IssueCommentPayload = match serde_json::from_slice(&body) {
+                Ok(p) => p,
+                Err(e) => {
+                    error!("Failed to parse issue_comment payload: {}", e);
+                    return Response::builder()
+                        .status(StatusCode::BAD_REQUEST)
+                        .body(format!("Invalid JSON: {}", e).into())
+                        .unwrap();
+                }
+            };
+            match handlers::handle_issue_comment(payload).await {
+                Ok(response) => response,
+                Err(response) => response,
+            }
+        }
+        "pull_request" => {
+            let payload: PullRequestPayload = match serde_json::from_slice(&body) {
+                Ok(p) => p,
+                Err(e) => {
+                    error!("Failed to parse pull_request payload: {}", e);
+                    return Response::builder()
+                        .status(StatusCode::BAD_REQUEST)
+                        .body(format!("Invalid JSON: {}", e).into())
+                        .unwrap();
+                }
+            };
+            match handlers::handle_pull_request(payload).await {
+                Ok(response) => response,
+                Err(response) => response,
+            }
+        }
+        "pull_request_review_comment" => {
+            let payload: PullRequestReviewCommentPayload = match serde_json::from_slice(&body) {
+                Ok(p) => p,
+                Err(e) => {
+                    error!("Failed to parse pull_request_review_comment payload: {}", e);
+                    return Response::builder()
+                        .status(StatusCode::BAD_REQUEST)
+                        .body(format!("Invalid JSON: {}", e).into())
+                        .unwrap();
+                }
+            };
+            match handlers::handle_pull_request_review_comment(payload).await {
+                Ok(response) => response,
+                Err(response) => response,
+            }
+        }
+        _ => {
+            // Unknown event type, return 200 to avoid retries
+            warn!("Unknown webhook event type: {}", event_type);
+            handlers::handle_unknown_event(&event_type).await.unwrap_or_else(|e| e)
+        }
+    }
+}
+
+/// Create the webhook router
+pub fn create_webhook_router(config: Arc<Config>) -> Router {
+    Router::new()
+        .route("/webhook", post(webhook_handler))
+        .with_state(config)
+}
+
+/// Start the webhook server
+pub async fn start_server(config: Arc<Config>) -> Result<()> {
+    let host = config.server.host.clone();
+    let port = config.server.port;
+
+    let app = create_webhook_router(config);
+
+    let listener = tokio::net::TcpListener::bind(format!("{}:{}", host, port))
+        .await
+        .with_context(|| format!("Failed to bind to {}:{}", host, port))?;
+
+    info!("Webhook server listening on {}:{}", host, port);
+
+    axum::serve(listener, app)
+        .await
+        .context("Server error")?;
+
+    Ok(())
+}
+
+/// Compute HMAC-SHA256 signature for testing
+pub fn compute_test_signature(secret: &str, body: &[u8]) -> String {
+    let verifier = WebhookVerifier::new(secret.to_string());
+    verifier.compute_signature(body)
+}
