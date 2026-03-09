@@ -123,7 +123,7 @@ The core of forgebot — spawning opencode and managing its lifecycle.
 
 Wire all the real handler logic now that the building blocks exist.
 
-- [ ] Implement `issue_comment` handler:
+- [x] Implement `issue_comment` handler:
   - Ignore if author == `config.forgejo.bot_username`
   - Ignore if repo not in `repos` table
   - Ignore if comment does not contain `@forgebot`
@@ -132,22 +132,22 @@ Wire all the real handler logic now that the building blocks exist.
   - Parse keyword: `plan` -> set agent mode `plan`; `build` -> set agent mode `build`; anything else -> use current session state to pick mode
   - Post acknowledgement comment (`🤖 forgebot is thinking...` or `🤖 forgebot is working on it...`)
   - `tokio::spawn` -> `dispatch_session`
-- [ ] Implement `pull_request` opened handler:
+- [x] Implement `pull_request` opened handler:
   - Parse head branch; extract issue ID from `agent/issue-<id>` pattern
   - Look up session by `(repo_full_name, issue_id)`; if not found, log and return 200 (not an error — may not be a forgebot PR)
   - Update session row with PR ID
-- [ ] Implement `pull_request` closed/merged handler:
+- [x] Implement `pull_request` closed/merged handler:
   - Parse head branch for `agent/issue-<id>` pattern; if no match, return 200
   - Insert into `pending_worktrees`
   - Call `remove_worktree` (or schedule it — for POC, remove inline is fine)
-- [ ] Implement `pull_request_review_comment` handler:
+- [x] Implement `pull_request_review_comment` handler:
   - Ignore if author == bot username
   - Ignore if comment does not contain `@forgebot`
   - Look up session by PR ID; if not found: post hard-fail comment, return 200
   - If state is `planning` or `building`: post busy comment, return 200
   - Post acknowledgement comment on PR
   - `tokio::spawn` -> `dispatch_session` in build mode with review comment prompt
-- [ ] Confirm: end-to-end test — post `@forgebot plan` on a real issue, verify the full flow completes
+- [x] Confirm: end-to-end test — post `@forgebot plan` on a real issue, verify the full flow completes
 
 ---
 
