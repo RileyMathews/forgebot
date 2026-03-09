@@ -60,50 +60,85 @@ Add a minimal service configuration to your NixOS config:
 ```nix
 services.forgebot = {
   enable = true;
-  configFile = /etc/secrets/forgebot.toml;  # Or use a plain path string
+  
+  # Server configuration
+  server.host = "127.0.0.1";
+  server.port = 8765;
+  server.webhookSecret = "your-webhook-secret-here";
+  
+  # Forgejo integration
+  forgejo.url = "https://git.example.com";
+  forgejo.token = "your-forgejo-api-token";
+  forgejo.botUsername = "forgebot";
+  
+  # opencode configuration (optional - these are the defaults)
+  opencode.binary = "opencode";
+  opencode.worktreeBase = "/var/lib/forgebot/worktrees";
+  opencode.configDir = "/var/lib/forgebot/opencode-config";
+  
+  # Database (optional - this is the default)
+  database.path = "/var/lib/forgebot/forgebot.db";
 };
 ```
 
-For advanced configuration with environment variables:
+**For production deployments with sops-nix secret management:**
+
+```nix
+{ config, ... }:
+{
+  # First define your secrets with sops-nix
+  sops.secrets.forgebot-webhook-secret = { };
+  sops.secrets.forgebot-token = { };
+  
+  services.forgebot = {
+    enable = true;
+    
+    # Server configuration (non-sensitive)
+    server.host = "127.0.0.1";
+    server.port = 8765;
+    # Omit server.webhookSecret here, use secretTokens below instead
+    
+    # Forgejo integration (non-sensitive)
+    forgejo.url = "https://git.example.com";
+    forgejo.botUsername = "forgebot";
+    # Omit forgejo.token here, use secretTokens below instead
+    
+    # Read secrets from files (sops-nix creates these at startup)
+    secretTokens = {
+      webhookSecret = config.sops.secrets.forgebot-webhook-secret.path;
+      forgejoPat = config.sops.secrets.forgebot-token.path;
+    };
+  };
+}
+```
+
+This approach keeps sensitive values out of the Nix store and world-readable configuration. The module automatically generates `/var/lib/forgebot/forgebot.toml` with the correct values at service startup.
+
+**Legacy configuration (deprecated):**
+
+The old `configFile` option is still supported but deprecated. If you must use a manually-managed TOML file:
 
 ```nix
 services.forgebot = {
   enable = true;
-  configFile = /etc/forgebot/forgebot.toml;
-  dataDir = "/var/lib/forgebot";
-  environment = {
-    FORGEBOT_WEBHOOK_SECRET = "your-secret-here";
-    FORGEBOT_FORGEJO_TOKEN = "your-token-here";
-    RUST_LOG = "info";
-  };
+  configFile = /etc/secrets/forgebot.toml;  # Deprecated, will be removed
 };
 ```
 
-### 4. Create `forgebot.toml`
-
-Copy `forgebot.toml.example` to your configuration path and customize:
-
-```bash
-sudo cp forgebot.toml.example /etc/forgebot/forgebot.toml
-sudo $EDITOR /etc/forgebot/forgebot.toml
-```
-
-Key sections to configure:
-
-- **`[server]`**: HTTP host, port, and webhook secret (can use `FORGEBOT_WEBHOOK_SECRET` env var)
-- **`[forgejo]`**: Instance URL, API token (can use `FORGEBOT_FORGEJO_TOKEN` env var), bot username
-- **`[opencode]`**: Binary path, worktree base directory, config directory paths
-- **`[database]`**: SQLite database file location
-
-See `forgebot.toml.example` for detailed comments on each setting.
-
-### 5. Apply the configuration
+### 4. Apply the configuration
 
 ```bash
 sudo nixos-rebuild switch
 ```
 
-### 6. Verify startup
+The forgebot module will:
+1. Create the forgebot user and group
+2. Set up the data directory structure
+3. **Auto-generate the forgebot.toml configuration file** at `/var/lib/forgebot/forgebot.toml`
+4. Set restrictive permissions (0600, owned by forgebot user) on the config file
+5. Start the forgebot service
+
+### 5. Verify startup
 
 Check the service logs for successful initialization:
 
@@ -113,7 +148,7 @@ journalctl -u forgebot -f
 
 You should see messages indicating the database is initialized, migrations completed, and the server is listening.
 
-### 7. Register repositories
+### 6. Register repositories
 
 Navigate to the setup UI at `http://<host>:8765/ui`:
 
@@ -126,7 +161,7 @@ Navigate to the setup UI at `http://<host>:8765/ui`:
 
 This inserts the repository into the database. The repo will appear in the list with an **"Incomplete"** status.
 
-### 8. Clone watched repositories
+### 7. Clone watched repositories
 
 For each registered repository, the setup page at `/ui/repo/:owner/:name` shows the exact clone command:
 
@@ -143,7 +178,7 @@ cd /var/lib/forgebot/worktrees
 git clone --bare https://git.example.com/alice/myrepo.git alice_myrepo
 ```
 
-### 9. Complete repository setup
+### 8. Complete repository setup
 
 Back in the UI at `/ui/repo/:owner/:name`, complete all four steps:
 
@@ -218,7 +253,7 @@ For non-NixOS systems, follow this alternative deployment path:
    sudo systemctl enable --now forgebot
    ```
 
-7. Follow steps 6-9 from the [Quick Start](#quick-start-primary-path-nixos) guide above.
+7. Follow steps 5-8 from the [Quick Start](#quick-start-primary-path-nixos) guide above.
 
 ## Usage
 
