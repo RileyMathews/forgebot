@@ -212,7 +212,7 @@ mod tests {
             worktree_base: PathBuf::from("/var/lib/forgebot/worktrees"),
             config_dir: PathBuf::from("/etc/forgebot"),
             git_binary: "git".to_string(),
-            model: "opencode/gpt-5-nano".to_string(),
+            model: "opencode/kimi-k2.5".to_string(),
         }
     }
 

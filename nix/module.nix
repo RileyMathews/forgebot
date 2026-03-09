@@ -198,13 +198,13 @@ in
 
           model = lib.mkOption {
             type = lib.types.str;
-            default = "opencode/gpt-5-nano";
+            default = "opencode/kimi-k2.5";
             example = "opencode/claude-sonnet-4-5";
             description = ''
               The AI model to use for opencode sessions.
               Format: "provider/model-name"
               Examples: 
-                - "opencode/gpt-5-nano" (default, lower cost)
+                - "opencode/kimi-k2.5" (default, lower cost)
                 - "opencode/claude-sonnet-4-5" (good balance of cost/quality)
                 - "opencode/claude-opus-4-6" (highest quality, more expensive)
                 - "opencode/gpt-5" (OpenAI via Zen)
