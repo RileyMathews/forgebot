@@ -12,7 +12,6 @@
     };
     opencode = {
       url = "github:anomalyco/opencode?ref=v1.2.23";
-      inputs.nixpkgs.follows = "nixpkgs";
     };
   };
 
