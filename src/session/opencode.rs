@@ -192,6 +192,9 @@ pub async fn run_opencode(params: RunOpencodeParams<'_>) -> Result<Option<String
                 | "XDG_CONFIG_HOME"
                 | "XDG_CACHE_HOME"
                 | "BUN_INSTALL_CACHE_DIR"
+                | "TMPDIR"
+                | "TMP"
+                | "TEMP"
                 | "OPENCODE_CONFIG_DIR"
         ) {
             blocked_runtime_overrides.push(format!("{}={}", key, value));
@@ -249,7 +252,15 @@ pub async fn run_opencode(params: RunOpencodeParams<'_>) -> Result<Option<String
     // Configure non-interactive git HTTPS auth using the Forgejo token.
     // The token is already present in FORGEBOT_FORGEJO_TOKEN. This askpass script
     // returns bot username for username prompts and token for password prompts.
-    let askpass_path = worktree_path.join(".forgebot-git-askpass.sh");
+    let askpass_path = std::env::temp_dir().join("forgebot-git-askpass.sh");
+    if let Some(parent) = askpass_path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create directory for git askpass script at {}",
+                parent.display()
+            )
+        })?;
+    }
     std::fs::write(
         &askpass_path,
         r#"#!/bin/sh
@@ -304,6 +315,18 @@ esac
     if let Ok(bun_cache_dir) = std::env::var("BUN_INSTALL_CACHE_DIR") {
         env_vars.insert("BUN_INSTALL_CACHE_DIR".to_string(), bun_cache_dir);
     }
+    env_vars.insert(
+        "TMPDIR".to_string(),
+        std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string()),
+    );
+    env_vars.insert(
+        "TMP".to_string(),
+        std::env::var("TMP").unwrap_or_else(|_| "/tmp".to_string()),
+    );
+    env_vars.insert(
+        "TEMP".to_string(),
+        std::env::var("TEMP").unwrap_or_else(|_| "/tmp".to_string()),
+    );
 
     info!(
         home = %env_vars.get("HOME").cloned().unwrap_or_else(|| "<unset>".to_string()),
@@ -311,6 +334,7 @@ esac
         xdg_config_home = %env_vars.get("XDG_CONFIG_HOME").cloned().unwrap_or_else(|| "<unset>".to_string()),
         xdg_cache_home = %env_vars.get("XDG_CACHE_HOME").cloned().unwrap_or_else(|| "<unset>".to_string()),
         bun_cache_dir = %env_vars.get("BUN_INSTALL_CACHE_DIR").cloned().unwrap_or_else(|| "<unset>".to_string()),
+        tmpdir = %env_vars.get("TMPDIR").cloned().unwrap_or_else(|| "<unset>".to_string()),
         "Effective runtime environment for opencode"
     );
 
