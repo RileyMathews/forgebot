@@ -67,10 +67,11 @@ in
       example = lib.literalExpression ''
         {
           RUST_LOG = "debug";
-          RUST_BACKTRACE = "1";
         }
       '';
-      description = "Additional environment variables for the forgebot service.";
+      description = ''
+        Additional environment variables to set for the forgebot service.
+      '';
     };
 
     # =============================================================================
@@ -287,7 +288,7 @@ in
           RestrictRealtime = true;
           RestrictNamespaces = true;
           LockPersonality = true;
-          MemoryDenyWriteExecute = true;
+          MemoryDenyWriteExecute = false;
 
           # Allow writing to data directory
           ReadWritePaths = [ cfg.dataDir ];
