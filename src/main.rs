@@ -1,6 +1,4 @@
 use anyhow::{Context, Result};
-use clap::Parser;
-use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
@@ -12,16 +10,6 @@ mod session;
 mod webhook;
 mod ui;
 
-#[derive(Parser, Debug)]
-#[command(name = "forgebot")]
-#[command(about = "A daemon that bridges Forgejo webhooks to opencode")]
-#[command(version = "0.1.0")]
-struct Cli {
-    /// Path to the configuration file
-    #[arg(short, long, value_name = "FILE")]
-    config: Option<PathBuf>,
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize tracing subscriber
@@ -31,16 +19,10 @@ async fn main() -> Result<()> {
     tracing::subscriber::set_global_default(subscriber)
         .context("Failed to set tracing subscriber")?;
 
-    // Parse CLI arguments
-    let cli = Cli::parse();
+    info!("forgebot starting");
 
-    info!(
-        config_file = ?cli.config.as_deref(),
-        "forgebot starting"
-    );
-
-    // Load configuration
-    let config = config::Config::load(cli.config.as_deref())
+    // Load configuration from environment variables
+    let config = config::Config::load()
         .context("Failed to load configuration")?;
 
     // Set up opencode config directory

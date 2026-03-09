@@ -61,23 +61,12 @@ Add a minimal service configuration to your NixOS config:
 services.forgebot = {
   enable = true;
   
-  # Server configuration
-  server.host = "127.0.0.1";
-  server.port = 8765;
-  server.webhookSecret = "your-webhook-secret-here";
+  # Server configuration (optional - defaults shown)
+  server.host = "127.0.0.1";  # default: 127.0.0.1
+  server.port = 8765;         # default: 8765
   
-  # Forgejo integration
-  forgejo.url = "https://git.example.com";
-  forgejo.token = "your-forgejo-api-token";
-  forgejo.botUsername = "forgebot";
-  
-  # opencode configuration (optional - these are the defaults)
-  opencode.binary = "opencode";
-  opencode.worktreeBase = "/var/lib/forgebot/worktrees";
-  opencode.configDir = "/var/lib/forgebot/opencode-config";
-  
-  # Database (optional - this is the default)
-  database.path = "/var/lib/forgebot/forgebot.db";
+  # Path to secrets file (required - see below)
+  secretsFilePath = "/run/secrets/forgebot";
 };
 ```
 
@@ -87,43 +76,37 @@ services.forgebot = {
 { config, ... }:
 {
   # First define your secrets with sops-nix
-  sops.secrets.forgebot-webhook-secret = { };
-  sops.secrets.forgebot-token = { };
+  sops.secrets.forgebot = { };
   
   services.forgebot = {
     enable = true;
     
-    # Server configuration (non-sensitive)
+    # Server configuration (optional - uses defaults if not specified)
     server.host = "127.0.0.1";
     server.port = 8765;
-    # Omit server.webhookSecret here, use secretTokens below instead
     
-    # Forgejo integration (non-sensitive)
-    forgejo.url = "https://git.example.com";
-    forgejo.botUsername = "forgebot";
-    # Omit forgejo.token here, use secretTokens below instead
-    
-    # Read secrets from files (sops-nix creates these at startup)
-    secretTokens = {
-      webhookSecret = config.sops.secrets.forgebot-webhook-secret.path;
-      forgejoPat = config.sops.secrets.forgebot-token.path;
-    };
+    # Secrets file loaded via systemd EnvironmentFile
+    secretsFilePath = config.sops.secrets.forgebot.path;
   };
 }
 ```
 
-This approach keeps sensitive values out of the Nix store and world-readable configuration. The module automatically generates `/var/lib/forgebot/forgebot.toml` with the correct values at service startup.
+The secrets file (at `/run/secrets/forgebot` in the example above) must contain:
 
-**Legacy configuration (deprecated):**
-
-The old `configFile` option is still supported but deprecated. If you must use a manually-managed TOML file:
-
-```nix
-services.forgebot = {
-  enable = true;
-  configFile = /etc/secrets/forgebot.toml;  # Deprecated, will be removed
-};
 ```
+FORGEBOT_WEBHOOK_SECRET=your-webhook-secret-here
+FORGEBOT_FORGEJO_URL=https://git.example.com
+FORGEBOT_FORGEJO_TOKEN=your-forgejo-api-token
+```
+
+All other configuration values use sensible defaults:
+- `FORGEBOT_SERVER_HOST`: `127.0.0.1`
+- `FORGEBOT_SERVER_PORT`: `8765`
+- `FORGEBOT_FORGEJO_BOT_USERNAME`: `forgebot`
+- `FORGEBOT_OPENCODE_BINARY`: `opencode`
+- `FORGEBOT_OPENCODE_WORKTREE_BASE`: `/var/lib/forgebot/worktrees`
+- `FORGEBOT_OPENCODE_CONFIG_DIR`: `/var/lib/forgebot/opencode-config`
+- `FORGEBOT_DATABASE_PATH`: `/var/lib/forgebot/forgebot.db`
 
 ### 4. Apply the configuration
 
@@ -134,9 +117,7 @@ sudo nixos-rebuild switch
 The forgebot module will:
 1. Create the forgebot user and group
 2. Set up the data directory structure
-3. **Auto-generate the forgebot.toml configuration file** at `/var/lib/forgebot/forgebot.toml`
-4. Set restrictive permissions (0600, owned by forgebot user) on the config file
-5. Start the forgebot service
+3. Start the forgebot service with environment variables configured
 
 ### 5. Verify startup
 
@@ -208,10 +189,18 @@ For non-NixOS systems, follow this alternative deployment path:
    sudo chown -R forgebot:forgebot /var/lib/forgebot
    ```
 
-4. **Create and edit `forgebot.toml`**:
+4. **Set environment variables** and run:
    ```bash
-   sudo cp forgebot.toml.example /etc/forgebot/forgebot.toml
-   sudo $EDITOR /etc/forgebot/forgebot.toml
+   export FORGEBOT_WEBHOOK_SECRET="your-webhook-secret-here"
+   export FORGEBOT_FORGEJO_URL="https://git.example.com"
+   export FORGEBOT_FORGEJO_TOKEN="your-forgejo-api-token"
+   
+   # Optional - override defaults
+   export FORGEBOT_SERVER_HOST="127.0.0.1"
+   export FORGEBOT_SERVER_PORT="8765"
+   export FORGEBOT_FORGEJO_BOT_USERNAME="forgebot"
+   
+   forgebot
    ```
 
 5. **Write a systemd service unit** at `/etc/systemd/system/forgebot.service`:
@@ -228,7 +217,17 @@ For non-NixOS systems, follow this alternative deployment path:
    Group=forgebot
    WorkingDirectory=/var/lib/forgebot
    
-   ExecStart=/usr/local/bin/forgebot --config /etc/forgebot/forgebot.toml
+   ExecStart=/usr/local/bin/forgebot
+   
+   # Required environment variables
+   Environment="FORGEBOT_WEBHOOK_SECRET=your-webhook-secret"
+   Environment="FORGEBOT_FORGEJO_URL=https://git.example.com"
+   Environment="FORGEBOT_FORGEJO_TOKEN=your-api-token"
+   
+   # Optional - defaults shown
+   Environment="FORGEBOT_SERVER_HOST=127.0.0.1"
+   Environment="FORGEBOT_SERVER_PORT=8765"
+   Environment="FORGEBOT_FORGEJO_BOT_USERNAME=forgebot"
    
    # Ensure opencode is in PATH
    Environment="PATH=/usr/local/bin:/usr/bin:/bin"
@@ -254,6 +253,41 @@ For non-NixOS systems, follow this alternative deployment path:
    ```
 
 7. Follow steps 5-8 from the [Quick Start](#quick-start-primary-path-nixos) guide above.
+
+## Environment Variable Reference
+
+forgebot is configured entirely through environment variables:
+
+### Required Environment Variables
+
+These must be set or forgebot will exit with an error:
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `FORGEBOT_WEBHOOK_SECRET` | Webhook secret for HMAC verification (must match Forgejo webhook settings) | `openssl rand -hex 32` |
+| `FORGEBOT_FORGEJO_URL` | Base URL of your Forgejo instance | `https://git.example.com` |
+| `FORGEBOT_FORGEJO_TOKEN` | API token for Forgejo authentication | Create in Forgejo Settings → Applications |
+
+### Optional Environment Variables
+
+These have sensible defaults if not set:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FORGEBOT_SERVER_HOST` | `127.0.0.1` | Host address to bind HTTP server |
+| `FORGEBOT_SERVER_PORT` | `8765` | TCP port to listen on |
+| `FORGEBOT_FORGEJO_BOT_USERNAME` | `forgebot` | Username that forgebot operates as |
+| `FORGEBOT_OPENCODE_BINARY` | `opencode` | Path to opencode binary |
+| `FORGEBOT_OPENCODE_WORKTREE_BASE` | `/var/lib/forgebot/worktrees` | Base directory for git worktrees |
+| `FORGEBOT_OPENCODE_CONFIG_DIR` | `/var/lib/forgebot/opencode-config` | Directory for opencode config files |
+| `FORGEBOT_DATABASE_PATH` | `/var/lib/forgebot/forgebot.db` | Path to SQLite database |
+
+### Other Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `RUST_LOG` | Controls tracing/log output verbosity: `info`, `debug`, `trace`, `warn` |
+| `RUST_BACKTRACE` | Enables Rust stack traces on panic: `1` or `full` |
 
 ## Usage
 
@@ -364,6 +398,12 @@ Available commands in the dev shell:
 
 ### Common Issues
 
+#### "ERROR: FORGEBOT_WEBHOOK_SECRET environment variable is required but not set"
+
+- The three required environment variables must be set: `FORGEBOT_WEBHOOK_SECRET`, `FORGEBOT_FORGEJO_URL`, `FORGEBOT_FORGEJO_TOKEN`
+- Check that your secrets file (if using `secretsFilePath`) is properly formatted and readable by the forgebot user
+- Verify systemd loaded the environment file: `systemctl show forgebot --property=EnvironmentFile`
+
 #### "env loader direnv failed"
 
 - Ensure `.envrc` exists in the repository root
@@ -413,6 +453,10 @@ Check the database for session state:
 sqlite3 /var/lib/forgebot/forgebot.db ".tables"
 sqlite3 /var/lib/forgebot/forgebot.db "SELECT * FROM sessions WHERE state = 'error';"
 ```
+
+## Configuration Reference (Legacy)
+
+The `forgebot.toml.example` file in the repository shows the legacy TOML configuration format. **This is for reference only** — new deployments should use environment variables exclusively as described above.
 
 ## Architecture Notes
 
