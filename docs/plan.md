@@ -155,62 +155,62 @@ Wire all the real handler logic now that the building blocks exist.
 
 Operator web interface for repo management. Comes after core agent flow so the critical path is working first.
 
-- [ ] Add `askama` or `minijinja` to dependencies for server-side HTML rendering
-- [ ] Create `templates/base.html` — minimal HTML shell, no JS framework
-- [ ] Create `src/ui/mod.rs` — axum router for `/ui` prefix
-- [ ] Create `src/ui/handlers.rs`
+- [x] Add `askama` or `minijinja` to dependencies for server-side HTML rendering
+- [x] Create `templates/base.html` — minimal HTML shell, no JS framework
+- [x] Create `src/ui/mod.rs` — axum router for `/ui` prefix
+- [x] Create `src/ui/handlers.rs`
 
 **Dashboard (`GET /ui`)**
-- [ ] Query all rows from `repos` table
-- [ ] For each repo: check clone exists (`clone_exists`), check webhook registered (`list_repo_webhooks`), count active sessions
-- [ ] Render `templates/dashboard.html` — repo list with status indicators + Add Repository form (full_name, default_branch, env_loader radio group)
-- [ ] `POST /ui/repos` — validate inputs, insert repo row, redirect to per-repo setup page
+- [x] Query all rows from `repos` table
+- [x] For each repo: check clone exists (`clone_exists`), check webhook registered (`list_repo_webhooks`), count active sessions
+- [x] Render `templates/dashboard.html` — repo list with status indicators + Add Repository form (full_name, default_branch, env_loader radio group)
+- [x] `POST /ui/repos` — validate inputs, insert repo row, redirect to per-repo setup page
 
 **Per-Repo Setup (`GET /ui/repo/:owner/:name`)**
-- [ ] Create `templates/repo_setup.html`
-- [ ] Step 1: clone status — green/red, show exact `git clone --bare` command
-- [ ] Step 2: webhook — show webhook URL and secret; `POST /ui/repo/:owner/:name/webhook` calls `create_repo_webhook`, redirects back
-- [ ] Step 3: env loader — radio group pre-selected from DB; `POST /ui/repo/:owner/:name/env-loader` updates `repos.env_loader`, redirects back
-- [ ] Step 3b: Test environment button — `POST /ui/repo/:owner/:name/test-env` runs the loader against the local clone synchronously with a 30-second timeout; returns env var key list or error output inline
-- [ ] Step 4: verify — token permissions check, opencode binary found, config dir files present
+- [x] Create `templates/repo_setup.html`
+- [x] Step 1: clone status — green/red, show exact `git clone --bare` command
+- [x] Step 2: webhook — show webhook URL and secret; `POST /ui/repo/:owner/:name/webhook` calls `create_repo_webhook`, redirects back
+- [x] Step 3: env loader — radio group pre-selected from DB; `POST /ui/repo/:owner/:name/env-loader` updates `repos.env_loader`, redirects back
+- [x] Step 3b: Test environment button — `POST /ui/repo/:owner/:name/test-env` runs the loader against the local clone synchronously with a 30-second timeout; returns env var key list or error output inline
+- [x] Step 4: verify — token permissions check, opencode binary found, config dir files present
 
 **Sessions (`GET /ui/sessions`)**
-- [ ] Create `templates/sessions.html`
-- [ ] Query all rows from `sessions`, render as table: repo, issue ID, PR ID, state, worktree path, last updated
+- [x] Create `templates/sessions.html`
+- [x] Query all rows from `sessions`, render as table: repo, issue ID, PR ID, state, worktree path, last updated
 
-- [ ] Confirm: full UI walkthrough — add a repo, register webhook, set env loader, run test-env, view sessions
+- [x] Confirm: full UI walkthrough — add a repo, register webhook, set env loader, run test-env, view sessions
 
 ---
 
 ## Phase 11 — Nix Packaging and NixOS Module
 
-- [ ] Write `opencode-config/package.json` is already done (Phase 7) — confirm it is committed to the repo
-- [ ] Create `flake.nix`:
-  - Input: `nixpkgs`, `naersk` or `crane` for Rust builds, `flake-utils`
-  - `packages.${system}.forgebot` — builds the binary
-  - `nixosModules.forgebot` — imports `nix/module.nix`
-  - `devShells.${system}.default` — shell with `rustc`, `cargo`, `rust-analyzer`, `sqlx-cli`, `opencode`
-- [ ] Create `nix/overlay.nix` — Nix package derivation for forgebot binary
-- [ ] Create `nix/module.nix` — NixOS module with options: `enable`, `package`, `configFile`, `dataDir`, `user`, `group` (spec §19)
-  - Creates system user and group
-  - Creates `dataDir` with correct ownership
-  - Defines `systemd.services.forgebot` unit running as forgebot user, restarts on failure
-  - Ensures `opencode` is in the service PATH
-- [ ] Confirm: `nix build` produces a working binary; `nix flake check` passes
+- [x] Write `opencode-config/package.json` is already done (Phase 7) — confirm it is committed to the repo
+- [x] Create `flake.nix`:
+   - Input: `nixpkgs`, `naersk` or `crane` for Rust builds, `flake-utils`
+   - `packages.${system}.forgebot` — builds the binary
+   - `nixosModules.forgebot` — imports `nix/module.nix`
+   - `devShells.${system}.default` — shell with `rustc`, `cargo`, `rust-analyzer`, `sqlx-cli`, `opencode`
+- [x] Create `nix/overlay.nix` — Nix package derivation for forgebot binary
+- [x] Create `nix/module.nix` — NixOS module with options: `enable`, `package`, `configFile`, `dataDir`, `user`, `group` (spec §19)
+   - Creates system user and group
+   - Creates `dataDir` with correct ownership
+   - Defines `systemd.services.forgebot` unit running as forgebot user, restarts on failure
+   - Ensures `opencode` is in the service PATH
+- [x] Confirm: `nix build` produces a working binary; `nix flake check` passes
 
 ---
 
 ## Phase 12 — README and Documentation
 
-- [ ] Write `forgebot.toml.example` covering all config sections with comments
-- [ ] Write `README.md` with:
-  - What forgebot is (2-3 sentences)
-  - Prerequisites (Forgejo instance, opencode installed, Nix with flakes if using Nix env loader, bun for opencode tool dependencies)
-  - NixOS deployment walkthrough (spec §19 steps 1-9, in order)
-  - Manual repo setup steps (bare clone command)
-  - Trigger syntax quick reference (`@forgebot plan`, `@forgebot build`, PR review tagging)
-  - Brief note that other Linux deployments are possible but not officially documented
-- [ ] Confirm: follow the README from scratch on a clean NixOS VM and verify it works end-to-end
+- [x] Write `forgebot.toml.example` covering all config sections with comments
+- [x] Write `README.md` with:
+   - What forgebot is (2-3 sentences)
+   - Prerequisites (Forgejo instance, opencode installed, Nix with flakes if using Nix env loader, bun for opencode tool dependencies)
+   - NixOS deployment walkthrough (spec §19 steps 1-9, in order)
+   - Manual repo setup steps (bare clone command)
+   - Trigger syntax quick reference (`@forgebot plan`, `@forgebot build`, PR review tagging)
+   - Brief note that other Linux deployments are possible but not officially documented
+- [x] Confirm: follow the README from scratch on a clean NixOS VM and verify it works end-to-end
 
 ---
 
@@ -218,13 +218,13 @@ Operator web interface for repo management. Comes after core agent flow so the c
 
 Last pass before calling the POC done.
 
-- [ ] Audit all `unwrap()` and `expect()` calls — replace with proper error propagation or intentional panics with clear messages
-- [ ] Confirm all webhook handlers return 200 before spawning background work (never block Forgejo waiting for opencode)
-- [ ] Confirm bot comment loop prevention is in place on every handler that reads comments
-- [ ] Confirm env loader hard-failure path posts to Forgejo and sets state to `error` (not just logs)
-- [ ] Confirm busy-state rejection posts a Forgejo comment and returns 200
-- [ ] Confirm crash recovery on startup posts a Forgejo comment for each stuck session
-- [ ] Confirm HMAC verification rejects bad signatures before any payload deserialization
-- [ ] Review `FORGEBOT_*` env var injection — confirm they always win over loader output
-- [ ] Add basic `tracing` instrumentation to all major code paths (webhook received, session dispatched, opencode spawned, opencode exited, state transition)
-- [ ] Test the full issue -> plan -> build -> PR -> review -> revision flow end-to-end on a real Forgejo instance
+- [x] Audit all `unwrap()` and `expect()` calls — replace with proper error propagation or intentional panics with clear messages
+- [x] Confirm all webhook handlers return 200 before spawning background work (never block Forgejo waiting for opencode)
+- [x] Confirm bot comment loop prevention is in place on every handler that reads comments
+- [x] Confirm env loader hard-failure path posts to Forgejo and sets state to `error` (not just logs)
+- [x] Confirm busy-state rejection posts a Forgejo comment and returns 200
+- [x] Confirm crash recovery on startup posts a Forgejo comment for each stuck session
+- [x] Confirm HMAC verification rejects bad signatures before any payload deserialization
+- [x] Review `FORGEBOT_*` env var injection — confirm they always win over loader output
+- [x] Add basic `tracing` instrumentation to all major code paths (webhook received, session dispatched, opencode spawned, opencode exited, state transition)
+- [x] Test the full issue -> plan -> build -> PR -> review -> revision flow end-to-end on a real Forgejo instance
