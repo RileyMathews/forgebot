@@ -38,5 +38,7 @@ pub fn create_ui_router(state: AppState) -> Router {
         .route("/repo/:owner/:name/remove", post(handlers::remove_repo))
         // Sessions list (GET /ui/sessions)
         .route("/sessions", get(handlers::sessions))
+        // Session logs (GET /ui/session/:session_id/logs)
+        .route("/session/:session_id/logs", get(handlers::session_logs))
         .with_state(state)
 }

@@ -119,33 +119,42 @@ pub fn setup_opencode_config_dir(config: &OpencodeConfig) -> Result<()> {
     Ok(())
 }
 
+/// Parameters for running opencode
+pub struct RunOpencodeParams<'a> {
+    pub db: &'a DbPool,
+    pub config: &'a Config,
+    pub session_record_id: &'a str,
+    pub opencode_session_id: &'a str,
+    pub agent_mode: &'a str,
+    pub worktree_path: &'a Path,
+    pub prompt: &'a str,
+    pub env_extras: HashMap<String, String>,
+}
+
 /// Run opencode subprocess with the given parameters.
 ///
+/// Captures stdout and stderr and saves them to the database for debugging.
+///
 /// # Arguments
-/// * `config` - The forgebot configuration
-/// * `session_id` - The session ID for this invocation
-/// * `agent_mode` - The agent mode: "plan" or "build"
-/// * `worktree_path` - Path to the worktree directory
-/// * `prompt` - The prompt string to pass to opencode
-/// * `env_extras` - Additional environment variables from env loader
+/// * `params` - All parameters for running opencode
 ///
 /// # Returns
 /// * `Ok(())` if opencode exits with code 0
 /// * `Err` if opencode fails or exits non-zero
-pub async fn run_opencode(
-    config: &Config,
-    session_id: &str,
-    agent_mode: &str,
-    worktree_path: &Path,
-    prompt: &str,
-    env_extras: HashMap<String, String>,
-) -> Result<()> {
-    let binary = &config.opencode.binary;
-    let opencode_config_home = config.opencode.config_dir.clone();
+pub async fn run_opencode(params: RunOpencodeParams<'_>) -> Result<()> {
+    let binary = &params.config.opencode.binary;
+    let opencode_config_home = params.config.opencode.config_dir.clone();
+    let db = params.db;
+    let session_record_id = params.session_record_id;
+    let opencode_session_id = params.opencode_session_id;
+    let agent_mode = params.agent_mode;
+    let worktree_path = params.worktree_path;
+    let prompt = params.prompt;
+    let env_extras = params.env_extras;
 
     debug!(
-        "Spawning opencode: binary={}, session_id={}, agent_mode={}",
-        binary, session_id, agent_mode
+        "Spawning opencode: binary={}, opencode_session_id={}, agent_mode={}",
+        binary, opencode_session_id, agent_mode
     );
 
     // Build environment
@@ -157,7 +166,10 @@ pub async fn run_opencode(
     }
 
     // Log the PATH for debugging
-    let path = env_vars.get("PATH").cloned().unwrap_or_else(|| "NOT_SET".to_string());
+    let path = env_vars
+        .get("PATH")
+        .cloned()
+        .unwrap_or_else(|| "NOT_SET".to_string());
     info!("Environment PATH: {}", path);
     info!("Binary name: {}", binary);
 
@@ -169,13 +181,16 @@ pub async fn run_opencode(
     // 3. Set FORGEBOT_* vars (always win)
     env_vars.insert(
         "FORGEBOT_FORGEJO_URL".to_string(),
-        config.forgejo.url.clone(),
+        params.config.forgejo.url.clone(),
     );
     env_vars.insert(
         "FORGEBOT_FORGEJO_TOKEN".to_string(),
-        config.forgejo.token.clone(),
+        params.config.forgejo.token.clone(),
     );
-    env_vars.insert("FORGEBOT_REPO".to_string(), config.forgejo.url.clone());
+    env_vars.insert(
+        "FORGEBOT_REPO".to_string(),
+        params.config.forgejo.url.clone(),
+    );
     env_vars.insert(
         "OPENCODE_CONFIG_HOME".to_string(),
         opencode_config_home.display().to_string(),
@@ -200,15 +215,19 @@ pub async fn run_opencode(
     // Ensure worktree directory exists
     if !worktree_path.exists() {
         info!("Creating worktree directory: {}", worktree_path.display());
-        std::fs::create_dir_all(worktree_path)
-            .with_context(|| format!("Failed to create worktree directory: {}", worktree_path.display()))?;
+        std::fs::create_dir_all(worktree_path).with_context(|| {
+            format!(
+                "Failed to create worktree directory: {}",
+                worktree_path.display()
+            )
+        })?;
     }
 
     // Build the command
     let mut cmd = Command::new(&binary_path);
     cmd.arg("run")
         .arg("--session")
-        .arg(session_id)
+        .arg(opencode_session_id)
         .arg("--agent")
         .arg(agent_mode)
         .arg(prompt)
@@ -219,7 +238,9 @@ pub async fn run_opencode(
 
     info!(
         "Running opencode command: binary={}, resolved_path={}, worktree={}",
-        binary, binary_path, worktree_path.display()
+        binary,
+        binary_path,
+        worktree_path.display()
     );
 
     let output = match cmd.output().await {
@@ -227,11 +248,16 @@ pub async fn run_opencode(
         Err(e) => {
             error!(
                 "Failed to spawn opencode process: {} (resolved to {}): kind={:?}, os_error={:?}",
-                binary, binary_path, e.kind(), e.raw_os_error()
+                binary,
+                binary_path,
+                e.kind(),
+                e.raw_os_error()
             );
             return Err(anyhow!(
                 "Failed to spawn opencode process: {} (resolved to {}): {}",
-                binary, binary_path, e
+                binary,
+                binary_path,
+                e
             ));
         }
     };
@@ -239,6 +265,20 @@ pub async fn run_opencode(
     let exit_code = output.status.code().unwrap_or(-1);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Save session log to database
+    let log_record = crate::db::NewSessionLog {
+        id: uuid::Uuid::new_v4().to_string(),
+        session_id: session_record_id.to_string(),
+        stdout: stdout.to_string(),
+        stderr: stderr.to_string(),
+        exit_code: Some(exit_code as i64),
+    };
+
+    if let Err(e) = crate::db::insert_session_log(db, &log_record).await {
+        error!("Failed to save session log: {}", e);
+        // Don't fail the entire operation if logging fails
+    }
 
     if output.status.success() {
         debug!("opencode exited successfully with code 0");
@@ -494,14 +534,16 @@ Error output: {}",
         "Spawning opencode"
     );
 
-    let opencode_result = run_opencode(
+    let opencode_result = run_opencode(RunOpencodeParams {
+        db,
         config,
-        &session_id,
+        session_record_id: &session_record.id,
+        opencode_session_id: &session_id,
         agent_mode,
-        &worktree_path,
-        &prompt,
-        session_env,
-    )
+        worktree_path: &worktree_path,
+        prompt: &prompt,
+        env_extras: session_env,
+    })
     .await;
 
     // 15. Handle result

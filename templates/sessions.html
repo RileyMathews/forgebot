@@ -22,6 +22,7 @@
                     <th>State</th>
                     <th>Worktree Path</th>
                     <th>Last Updated</th>
+                    <th>Actions</th>
                 </tr>
             </thead>
             <tbody>
@@ -48,6 +49,9 @@
                     </td>
                     <td><code style="font-size: 0.8rem;">{{ session.worktree_path }}</code></td>
                     <td>{{ session.updated_at }}</td>
+                    <td>
+                        <a href="/ui/session/{{ session.id }}/logs" class="btn" style="font-size: 0.8rem; padding: 0.25rem 0.5rem;">View Logs</a>
+                    </td>
                 </tr>
                 {% endfor %}
             </tbody>

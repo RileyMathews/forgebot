@@ -59,6 +59,13 @@ struct SessionsTemplate {
     sessions: Vec<Session>,
 }
 
+#[derive(Template)]
+#[template(path = "session_logs.html")]
+struct SessionLogsTemplate {
+    session: Session,
+    logs: Vec<crate::db::SessionLog>,
+}
+
 // ============================================================================
 // Helper Structs
 // ============================================================================
@@ -462,6 +469,49 @@ pub async fn sessions(State(state): State<AppState>) -> impl IntoResponse {
     let template = SessionsTemplate {
         sessions: all_sessions,
     };
+
+    match template.render() {
+        Ok(html) => Html(html).into_response(),
+        Err(e) => internal_error_response(format!("Template error: {}", e)),
+    }
+}
+
+/// GET /ui/session/:session_id/logs - View session logs
+pub async fn session_logs(
+    State(state): State<AppState>,
+    AxumPath(session_id): AxumPath<String>,
+) -> impl IntoResponse {
+    // First, get the session to verify it exists and get metadata
+    let sessions = match crate::db::get_sessions_in_state(
+        &state.db,
+        &["planning", "building", "idle", "busy", "error"],
+    )
+    .await
+    {
+        Ok(sessions) => sessions,
+        Err(e) => {
+            error!("Failed to fetch sessions: {}", e);
+            return internal_error_response(format!("Failed to fetch sessions: {}", e));
+        }
+    };
+
+    let session = match sessions.iter().find(|s| s.id == session_id) {
+        Some(s) => s.clone(),
+        None => {
+            return internal_error_response(format!("Session not found: {}", session_id));
+        }
+    };
+
+    // Get the session logs
+    let logs = match crate::db::get_session_logs(&state.db, &session_id).await {
+        Ok(logs) => logs,
+        Err(e) => {
+            error!("Failed to fetch session logs: {}", e);
+            return internal_error_response(format!("Failed to fetch session logs: {}", e));
+        }
+    };
+
+    let template = SessionLogsTemplate { session, logs };
 
     match template.render() {
         Ok(html) => Html(html).into_response(),
