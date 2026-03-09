@@ -21,13 +21,13 @@ Get a compiling, runnable binary with nothing in it yet.
 
 Schema and CRUD before anything else touches state.
 
-- [ ] Create `migrations/001_initial.sql` — `sessions` and `pending_worktrees` tables (spec §5)
-- [ ] Create `migrations/002_repos.sql` — `repos` table (spec §5)
-- [ ] Create `src/db.rs` — connect to SQLite via `sqlx`, run migrations on startup
-- [ ] Implement repo CRUD: `insert_repo`, `get_repo_by_full_name`, `list_repos`, `update_repo_env_loader`
-- [ ] Implement session CRUD: `insert_session`, `get_session_by_issue`, `get_session_by_pr`, `update_session_state`, `update_session_pr_id`
-- [ ] Implement `get_sessions_in_state` (used by startup crash recovery)
-- [ ] Confirm: migrations run cleanly, a quick manual insert/query via `sqlx` test or `sqlite3` CLI works
+- [x] Create `migrations/001_initial.sql` — `sessions` and `pending_worktrees` tables (spec §5)
+- [x] Create `migrations/002_repos.sql` — `repos` table (spec §5)
+- [x] Create `src/db.rs` — connect to SQLite via `sqlx`, run migrations on startup
+- [x] Implement repo CRUD: `insert_repo`, `get_repo_by_full_name`, `list_repos`, `update_repo_env_loader`
+- [x] Implement session CRUD: `insert_session`, `get_session_by_issue`, `get_session_by_pr`, `update_session_state`, `update_session_pr_id`
+- [x] Implement `get_sessions_in_state` (used by startup crash recovery)
+- [x] Confirm: migrations run cleanly, a quick manual insert/query via `sqlx` test or `sqlite3` CLI works
 
 ---
 
