@@ -89,7 +89,11 @@ async fn test_delete_repo_final_step_succeeds() {
     let sessions_after = get_sessions_for_repo(&pool, repo)
         .await
         .expect("Failed to get sessions after delete");
-    assert_eq!(sessions_after.len(), 0, "Sessions should be cascade-deleted");
+    assert_eq!(
+        sessions_after.len(),
+        0,
+        "Sessions should be cascade-deleted"
+    );
 
     cleanup_test_db(&test_dir);
 }
@@ -303,7 +307,11 @@ async fn test_cleanup_multiple_sessions_all_deleted() {
             id: format!("session-{}", i),
             repo_full_name: repo.to_string(),
             issue_id: i as i64,
-            pr_id: if i % 2 == 0 { Some(i as i64 + 100) } else { None },
+            pr_id: if i % 2 == 0 {
+                Some(i as i64 + 100)
+            } else {
+                None
+            },
             opencode_session_id: format!("opencode-{}", i),
             worktree_path: format!("/tmp/worktree-{}", i),
             state: if i % 3 == 0 { "idle" } else { "error" }.to_string(),
@@ -327,7 +335,11 @@ async fn test_cleanup_multiple_sessions_all_deleted() {
     let sessions_after = get_sessions_for_repo(&pool, repo)
         .await
         .expect("Failed to get sessions");
-    assert_eq!(sessions_after.len(), 0, "All sessions should be cascade-deleted");
+    assert_eq!(
+        sessions_after.len(),
+        0,
+        "All sessions should be cascade-deleted"
+    );
 
     cleanup_test_db(&test_dir);
 }
@@ -376,7 +388,11 @@ async fn test_cleanup_preserves_other_repos() {
         let sessions = get_sessions_for_repo(&pool, repo)
             .await
             .expect("Failed to get sessions");
-        assert_eq!(sessions.len(), 3, "Unaffected repos should keep their sessions");
+        assert_eq!(
+            sessions.len(),
+            3,
+            "Unaffected repos should keep their sessions"
+        );
     }
 
     // Verify repo-b has no sessions

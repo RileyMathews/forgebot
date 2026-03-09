@@ -359,6 +359,55 @@ pub async fn update_repo_env_loader(
     Ok(())
 }
 
+/// Delete a repository by its full name
+pub async fn delete_repo(pool: &DbPool, full_name: &str) -> Result<()> {
+    sqlx::query(
+        r#"
+        DELETE FROM repos WHERE full_name = ?1
+        "#,
+    )
+    .bind(full_name)
+    .execute(pool)
+    .await
+    .with_context(|| format!("Failed to delete repo: {}", full_name))?;
+
+    debug!("Deleted repo: {}", full_name);
+    Ok(())
+}
+
+/// Get all sessions for a repository
+pub async fn get_sessions_for_repo(pool: &DbPool, full_name: &str) -> Result<Vec<Session>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT id, repo_full_name, issue_id, pr_id, opencode_session_id,
+               worktree_path, state, created_at, updated_at
+        FROM sessions
+        WHERE repo_full_name = ?1
+        "#,
+    )
+    .bind(full_name)
+    .fetch_all(pool)
+    .await
+    .with_context(|| format!("Failed to get sessions for repo: {}", full_name))?;
+
+    let sessions = rows
+        .into_iter()
+        .map(|row| Session {
+            id: row.get("id"),
+            repo_full_name: row.get("repo_full_name"),
+            issue_id: row.get("issue_id"),
+            pr_id: row.get("pr_id"),
+            opencode_session_id: row.get("opencode_session_id"),
+            worktree_path: row.get("worktree_path"),
+            state: row.get("state"),
+            created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
+        })
+        .collect();
+
+    Ok(sessions)
+}
+
 // ============================================================================
 // Session CRUD Operations
 // ============================================================================

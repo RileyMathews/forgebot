@@ -57,6 +57,9 @@
                     <td>{{ repo.session_count }}</td>
                     <td>
                         <a href="/ui/repo/{{ repo.owner }}/{{ repo.name }}" class="btn">Setup</a>
+                        <form method="post" action="/ui/repo/{{ repo.owner }}/{{ repo.name }}/remove" style="display:inline">
+                            <button type="submit" class="btn btn-danger" onclick="return confirm('This will permanently delete the repository and all associated data, including the webhook from Forgejo. Continue?')">Remove</button>
+                        </form>
                     </td>
                 </tr>
                 {% endfor %}

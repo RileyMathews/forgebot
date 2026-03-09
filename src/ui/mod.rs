@@ -34,6 +34,8 @@ pub fn create_ui_router(state: AppState) -> Router {
             "/repo/:owner/:name/retry-clone",
             post(handlers::retry_clone),
         )
+        // Remove repository (POST /ui/repo/:owner/:name/remove)
+        .route("/repo/:owner/:name/remove", post(handlers::remove_repo))
         // Sessions list (GET /ui/sessions)
         .route("/sessions", get(handlers::sessions))
         .with_state(state)

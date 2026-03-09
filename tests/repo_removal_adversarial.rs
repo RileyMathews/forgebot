@@ -97,7 +97,9 @@ async fn test_repo_removal_blocks_on_planning_session() {
 
     // Handler logic: planning is in active_states, so should block
     let active_states = ["planning", "building", "revising"];
-    let has_active = sessions.iter().any(|s| active_states.contains(&s.state.as_str()));
+    let has_active = sessions
+        .iter()
+        .any(|s| active_states.contains(&s.state.as_str()));
     assert!(has_active, "planning session should block removal");
 
     cleanup_test_db(&test_dir);
@@ -126,7 +128,9 @@ async fn test_repo_removal_blocks_on_building_session() {
 
     // Handler logic: building is in active_states, so should block
     let active_states = ["planning", "building", "revising"];
-    let has_active = sessions.iter().any(|s| active_states.contains(&s.state.as_str()));
+    let has_active = sessions
+        .iter()
+        .any(|s| active_states.contains(&s.state.as_str()));
     assert!(has_active, "building session should block removal");
 
     cleanup_test_db(&test_dir);
@@ -155,7 +159,9 @@ async fn test_repo_removal_allows_idle_session() {
 
     // idle is NOT in ["planning", "building", "revising"], so removal should be allowed
     let active_states = ["planning", "building", "revising"];
-    let has_active = sessions.iter().any(|s| active_states.contains(&s.state.as_str()));
+    let has_active = sessions
+        .iter()
+        .any(|s| active_states.contains(&s.state.as_str()));
     assert!(!has_active, "idle session should not block removal");
 
     cleanup_test_db(&test_dir);
@@ -184,7 +190,9 @@ async fn test_repo_removal_allows_error_session() {
 
     // error is NOT in ["planning", "building", "revising"], so removal should be allowed
     let active_states = ["planning", "building", "revising"];
-    let has_active = sessions.iter().any(|s| active_states.contains(&s.state.as_str()));
+    let has_active = sessions
+        .iter()
+        .any(|s| active_states.contains(&s.state.as_str()));
     assert!(!has_active, "error session should not block removal");
 
     cleanup_test_db(&test_dir);
@@ -214,8 +222,13 @@ async fn test_repo_removal_allows_busy_session() {
     // busy is NOT in ["planning", "building", "revising"], so removal should be allowed
     // BUG: "busy" state may indicate an active session per code, but handler doesn't check for it
     let active_states = ["planning", "building", "revising"];
-    let has_active = sessions.iter().any(|s| active_states.contains(&s.state.as_str()));
-    assert!(!has_active, "busy session is allowed per handler (but may be incorrect)");
+    let has_active = sessions
+        .iter()
+        .any(|s| active_states.contains(&s.state.as_str()));
+    assert!(
+        !has_active,
+        "busy session is allowed per handler (but may be incorrect)"
+    );
 
     cleanup_test_db(&test_dir);
 }
@@ -244,18 +257,20 @@ async fn test_repo_removal_checks_all_active_states() {
 
     // Check that at least one is active
     let active_states = ["planning", "building", "revising"];
-    let has_active = sessions.iter().any(|s| active_states.contains(&s.state.as_str()));
+    let has_active = sessions
+        .iter()
+        .any(|s| active_states.contains(&s.state.as_str()));
     assert!(has_active, "should detect building session as active");
 
     cleanup_test_db(&test_dir);
 }
 
 #[tokio::test]
-async fn test_repo_removal_handler_checks_revising_but_db_rejects_it() {
-    // BUG: Handler code checks for "revising" state (ui/handlers.rs:560)
-    // but database schema doesn't allow it (migrations/001_initial.sql:12)
-    // Valid states are: 'planning', 'building', 'idle', 'busy', 'error'
-    // This will cause runtime errors if opencode.rs line 304 attempts to set "revising"
+async fn test_revising_state_is_now_valid_in_database() {
+    // FIX: Migration 004 adds 'revising' state to the database CHECK constraint.
+    // Handler code checks for "revising" state (ui/handlers.rs:560)
+    // and opencode.rs line 304 sets sessions to "revising" state.
+    // Valid states are now: 'planning', 'building', 'idle', 'busy', 'error', 'revising'
     let (pool, test_dir) = setup_test_db().await;
 
     let repo = "owner/test-repo";
@@ -263,14 +278,13 @@ async fn test_repo_removal_handler_checks_revising_but_db_rejects_it() {
         .await
         .expect("Failed to insert repo");
 
-    // Attempt to insert a session in 'revising' state (should fail)
+    // Insert a session in 'revising' state (should succeed after migration 004)
     let result = insert_test_session(&pool, repo, 1, "revising", "/tmp/worktree-1").await;
 
-    // BUG: this currently fails — reported in Q's adversarial test report
-    // The handler checks for this state but DB won't allow it
+    // FIX: 'revising' state is now valid after migration 004
     assert!(
-        result.is_err(),
-        "revising state is not in database CHECK constraint - this is the bug"
+        result.is_ok(),
+        "revising state should now be valid in database after migration 004"
     );
 
     cleanup_test_db(&test_dir);
@@ -349,7 +363,10 @@ async fn test_delete_repo_with_no_sessions() {
 
     // Delete the repo
     let result = delete_repo(&pool, repo).await;
-    assert!(result.is_ok(), "Deleting repo with no sessions should succeed");
+    assert!(
+        result.is_ok(),
+        "Deleting repo with no sessions should succeed"
+    );
 
     cleanup_test_db(&test_dir);
 }
@@ -363,7 +380,11 @@ async fn test_get_sessions_for_repo_empty() {
     let sessions = get_sessions_for_repo(&pool, repo)
         .await
         .expect("Failed to get sessions");
-    assert_eq!(sessions.len(), 0, "Should return empty list for nonexistent repo");
+    assert_eq!(
+        sessions.len(),
+        0,
+        "Should return empty list for nonexistent repo"
+    );
 
     cleanup_test_db(&test_dir);
 }
@@ -510,9 +531,8 @@ async fn test_multiple_get_sessions_concurrent() {
     for _ in 0..5 {
         let pool_clone = pool.clone();
         let repo_clone = repo.to_string();
-        let handle = tokio::spawn(async move {
-            get_sessions_for_repo(&pool_clone, &repo_clone).await
-        });
+        let handle =
+            tokio::spawn(async move { get_sessions_for_repo(&pool_clone, &repo_clone).await });
         handles.push(handle);
     }
 
@@ -581,15 +601,10 @@ async fn test_session_with_extremely_long_worktree_path() {
         .expect("Failed to insert repo");
 
     // Create a very long path
-    let long_path = "/tmp/".to_string()
-        + &"very/long/path/component/".repeat(50)
-        + "worktree";
+    let long_path = "/tmp/".to_string() + &"very/long/path/component/".repeat(50) + "worktree";
 
     let result = insert_test_session(&pool, repo, 1, "idle", &long_path).await;
-    assert!(
-        result.is_ok(),
-        "Should handle very long worktree paths"
-    );
+    assert!(result.is_ok(), "Should handle very long worktree paths");
 
     let sessions = get_sessions_for_repo(&pool, repo)
         .await
@@ -611,9 +626,15 @@ async fn test_session_with_many_repos_isolation() {
             .expect("Failed to insert repo");
 
         // Add a session for each
-        insert_test_session(&pool, &repo, i as i64, "idle", &format!("/tmp/worktree-{}", i))
-            .await
-            .expect("Failed to insert session");
+        insert_test_session(
+            &pool,
+            &repo,
+            i as i64,
+            "idle",
+            &format!("/tmp/worktree-{}", i),
+        )
+        .await
+        .expect("Failed to insert session");
     }
 
     // Query for a specific repo
@@ -733,10 +754,7 @@ async fn test_repo_name_with_dots() {
     let repo = "owner/test.repo.name";
 
     let result = insert_repo(&pool, "repo-1", repo, "main", "nix").await;
-    assert!(
-        result.is_ok(),
-        "Should handle dots in repo names"
-    );
+    assert!(result.is_ok(), "Should handle dots in repo names");
 
     let sessions = get_sessions_for_repo(&pool, repo)
         .await

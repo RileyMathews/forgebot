@@ -75,7 +75,9 @@ async fn insert_test_session(
 /// Simulates the handler's active session check logic
 fn check_active_sessions(sessions: &[forgebot::db::Session]) -> bool {
     let active_states = ["planning", "building", "revising"];
-    sessions.iter().any(|s| active_states.contains(&s.state.as_str()))
+    sessions
+        .iter()
+        .any(|s| active_states.contains(&s.state.as_str()))
 }
 
 #[tokio::test]
@@ -189,7 +191,10 @@ async fn test_handler_logic_allows_busy() {
 
     let should_block = check_active_sessions(&sessions);
     // BUG: "busy" state appears to be used in the code but handler doesn't block on it
-    assert!(!should_block, "Handler allows busy session (potential bug if busy means active)");
+    assert!(
+        !should_block,
+        "Handler allows busy session (potential bug if busy means active)"
+    );
 
     cleanup_test_db(&test_dir);
 }
@@ -428,7 +433,8 @@ async fn test_all_valid_states_recognized_by_handler() {
             .map(|s| s.state.as_str());
 
         assert_eq!(
-            stored_state, Some(*state),
+            stored_state,
+            Some(*state),
             "State {} should be stored and retrieved correctly",
             state
         );
@@ -507,7 +513,11 @@ async fn test_delete_repo_with_many_sessions() {
     let sessions_after = get_sessions_for_repo(&pool, repo)
         .await
         .expect("Failed to get sessions");
-    assert_eq!(sessions_after.len(), 0, "All sessions should be cascade-deleted");
+    assert_eq!(
+        sessions_after.len(),
+        0,
+        "All sessions should be cascade-deleted"
+    );
 
     cleanup_test_db(&test_dir);
 }
@@ -541,7 +551,10 @@ async fn test_delete_repo_with_hyphen_underscore() {
         .expect("Failed to insert repo");
 
     let result = delete_repo(&pool, repo).await;
-    assert!(result.is_ok(), "Should handle mixed hyphens and underscores");
+    assert!(
+        result.is_ok(),
+        "Should handle mixed hyphens and underscores"
+    );
 
     cleanup_test_db(&test_dir);
 }

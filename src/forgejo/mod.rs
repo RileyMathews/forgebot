@@ -339,6 +339,51 @@ impl ForgejoClient {
         Ok(webhook)
     }
 
+    /// Delete a webhook for a repository
+    pub async fn delete_repo_webhook(&self, repo: &str, hook_id: u64) -> Result<()> {
+        let api_url = self.api_url(&format!("/api/v1/repos/{}/hooks/{}", repo, hook_id));
+        debug!("Deleting webhook at: {}", api_url);
+
+        let response = self
+            .client
+            .delete(&api_url)
+            .header("Authorization", self.auth_header())
+            .send()
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to send request to delete webhook {} for {}",
+                    hook_id, repo
+                )
+            })?;
+
+        let status = response.status();
+        if status == reqwest::StatusCode::NO_CONTENT {
+            // 204: Success, webhook deleted
+            return Ok(());
+        }
+
+        if status == reqwest::StatusCode::NOT_FOUND {
+            // 404: Webhook already deleted, treat as success
+            return Ok(());
+        }
+
+        if !status.is_success() {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<could not read body>".to_string());
+            anyhow::bail!(
+                "Failed to delete webhook: {} {} - {}",
+                status.as_u16(),
+                status.canonical_reason().unwrap_or("Unknown"),
+                body
+            );
+        }
+
+        Ok(())
+    }
+
     /// Check if the token has permissions by attempting to list collaborators
     pub async fn check_token_permissions(&self, repo: &str) -> Result<bool> {
         let url = self.api_url(&format!("/api/v1/repos/{}/collaborators", repo));

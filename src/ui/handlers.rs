@@ -15,6 +15,7 @@ use crate::db::{
 };
 use crate::forgejo::ForgejoClient;
 use crate::session::env_loader::load_env;
+use crate::session::repo_cleanup;
 use crate::session::worktree::clone_exists;
 use crate::webhook::AppState;
 
@@ -531,6 +532,36 @@ pub async fn retry_clone(
 
     // Redirect back to repo setup page
     Redirect::to(&format!("/ui/repo/{}/{}", owner, name)).into_response()
+}
+
+/// POST /ui/repo/:owner/:name/remove - Remove a repository
+pub async fn remove_repo(
+    State(state): State<AppState>,
+    AxumPath((owner, name)): AxumPath<(String, String)>,
+) -> impl IntoResponse {
+    let full_name = format!("{}/{}", owner, name);
+
+    // Spawn cleanup task (active session check moved inside remove_repository)
+    let db = state.db.clone();
+    let forgejo = state.forgejo.clone();
+    let config = state.config.clone();
+    let full_name_clone = full_name.clone();
+
+    tokio::spawn(async move {
+        let result =
+            repo_cleanup::remove_repository(&db, &forgejo, &config, &full_name_clone).await;
+        match result {
+            Ok(()) => {
+                info!(repo = %full_name_clone, "Successfully removed repository");
+            }
+            Err(e) => {
+                error!(repo = %full_name_clone, err = %e, "Failed to remove repository");
+            }
+        }
+    });
+
+    // Return immediately with a 303 See Other redirect to /ui
+    Redirect::to("/ui").into_response()
 }
 
 // ============================================================================
