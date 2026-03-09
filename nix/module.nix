@@ -315,8 +315,10 @@ in
           # Create XDG directories for opencode
           mkdir -p ${cfg.dataDir}/data/opencode
           mkdir -p ${cfg.dataDir}/config/opencode
+          mkdir -p ${cfg.dataDir}/cache
+          mkdir -p ${cfg.dataDir}/cache/bun
           chmod 755 ${cfg.dataDir}/data ${cfg.dataDir}/config
-          chmod 755 ${cfg.dataDir}/data/opencode ${cfg.dataDir}/config/opencode
+          chmod 755 ${cfg.dataDir}/data/opencode ${cfg.dataDir}/config/opencode ${cfg.dataDir}/cache ${cfg.dataDir}/cache/bun
 
           # Copy credentials file to auth.json with proper permissions
           # auth.json MUST be at $XDG_DATA_HOME/opencode/auth.json
@@ -397,6 +399,7 @@ in
             "PATH=${servicePath}:/run/current-system/sw/bin:/usr/bin:/bin"
             "RUST_LOG=info"
             "FORGEBOT_DATA_DIR=${cfg.dataDir}"
+            "HOME=${cfg.dataDir}"
             # Non-secret forgebot configuration
             "FORGEBOT_SERVER_HOST=${cfg.server.host}"
             "FORGEBOT_SERVER_PORT=${toString cfg.server.port}"
@@ -414,6 +417,8 @@ in
             # XDG directories for opencode (auth.json goes to $XDG_DATA_HOME/opencode/auth.json)
             "XDG_DATA_HOME=${cfg.dataDir}/data"
             "XDG_CONFIG_HOME=${cfg.dataDir}/config"
+            "XDG_CACHE_HOME=${cfg.dataDir}/cache"
+            "BUN_INSTALL_CACHE_DIR=${cfg.dataDir}/cache/bun"
             # Opencode-specific config directory (for custom agents/tools)
             "OPENCODE_CONFIG_DIR=${cfg.dataDir}/config/opencode/.opencode"
           ] 
