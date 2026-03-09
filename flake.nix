@@ -104,6 +104,9 @@
             openssl
             sqlite
 
+            # Process Compose for running the app
+            process-compose
+
           ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
             pkgs.darwin.apple_sdk.frameworks.Security
             pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
@@ -114,10 +117,11 @@
             echo "Cargo version: $(cargo --version)"
             echo ""
             echo "Available commands:"
-            echo "  cargo build    - Build the project"
-            echo "  cargo test     - Run tests"
-            echo "  cargo clippy   - Run linter"
-            echo "  sqlx migrate   - Run database migrations"
+            echo "  cargo build         - Build the project"
+            echo "  cargo test          - Run tests"
+            echo "  cargo clippy        - Run linter"
+            echo "  sqlx migrate        - Run database migrations"
+            echo "  process-compose up  - Build and run the app"
             echo ""
           '';
         };
