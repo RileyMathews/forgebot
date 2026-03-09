@@ -65,12 +65,12 @@ Get the HTTP server running and accepting webhooks, before implementing any hand
 
 Isolated per-issue working directories. Must work before opencode can be invoked.
 
-- [ ] Create `src/session/worktree.rs`
-- [ ] Implement `worktree_path(config, repo_full_name, issue_id) -> PathBuf` — derives the canonical path
-- [ ] Implement `create_worktree(repo_full_name, issue_id, default_branch)` — checks local bare clone exists at `<worktree_base>/<owner>_<repo>`, hard-fails with a descriptive error if not; runs `git worktree add <path> -b agent/issue-<id>`
-- [ ] Implement `remove_worktree(path)` — runs `git worktree remove --force <path>`
-- [ ] Implement `clone_exists(config, repo_full_name) -> bool` — probe used by setup UI and worktree creation
-- [ ] Confirm: manually create a local bare clone, call `create_worktree`, verify the branch and directory appear
+- [x] Create `src/session/worktree.rs`
+- [x] Implement `worktree_path(config, repo_full_name, issue_id) -> PathBuf` — derives the canonical path
+- [x] Implement `create_worktree(repo_full_name, issue_id, default_branch)` — checks local bare clone exists at `<worktree_base>/<owner>_<repo>`, hard-fails with a descriptive error if not; runs `git worktree add <path> -b agent/issue-<id>`
+- [x] Implement `remove_worktree(path)` — runs `git worktree remove --force <path>`
+- [x] Implement `clone_exists(config, repo_full_name) -> bool` — probe used by setup UI and worktree creation
+- [x] Confirm: manually create a local bare clone, call `create_worktree`, verify the branch and directory appear
 
 ---
 
