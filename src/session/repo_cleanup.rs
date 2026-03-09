@@ -85,7 +85,7 @@ pub async fn remove_repository(
     }
 
     // Await all worktree removals to guarantee completion
-    let worktree_results = futures::future::join_all(worktree_tasks).await;
+    let worktree_results = future::join_all(worktree_tasks).await;
 
     // Check for any panics in spawned tasks
     for result in worktree_results {
