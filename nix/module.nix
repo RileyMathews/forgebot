@@ -2,9 +2,6 @@
 
 let
   cfg = config.services.forgebot;
-
-  # Default package from the flake
-  defaultPackage = pkgs.forgebot or (throw "forgebot package not found in pkgs. Make sure the flake overlay is applied or set services.forgebot.package explicitly.");
 in
 {
   options.services.forgebot = {
@@ -12,9 +9,23 @@ in
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = defaultPackage;
-      defaultText = lib.literalExpression "pkgs.forgebot";
-      description = "The forgebot package to use.";
+      description = ''
+        The forgebot package to use.
+
+        Since forgebot is not in nixpkgs, you must provide it via your flake.
+
+        In your flake.nix, pass it via specialArgs:
+          <literal>
+          specialArgs = {
+            forgebot = forgebot.packages.${system}.forgebot;
+          };
+          </literal>
+
+        Then in your NixOS configuration:
+          <literal>
+          services.forgebot.package = forgebot;
+          </literal>
+      '';
     };
 
     dataDir = lib.mkOption {
