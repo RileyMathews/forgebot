@@ -326,7 +326,7 @@ in
           # Generate opencode.json with model selection in the config directory
           cat > ${cfg.dataDir}/config/opencode/opencode.json <<EOF
           {
-            "$$schema": "https://opencode.ai/config.json",
+            "\$schema": "https://opencode.ai/config.json",
             "model": "${cfg.opencode.model}"
           }
           EOF
