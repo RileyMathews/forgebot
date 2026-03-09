@@ -15,6 +15,7 @@ pub struct ServerConfig {
     pub host: String,
     pub port: u16,
     pub webhook_secret: String,
+    pub forgebot_host: String,
 }
 
 #[derive(Debug, Clone)]
@@ -51,6 +52,36 @@ impl Config {
         // Load optional environment variables with defaults
         let server_host = env_var_with_default("FORGEBOT_SERVER_HOST", "127.0.0.1");
         let server_port = env_var_parse_with_default("FORGEBOT_SERVER_PORT", 8765)?;
+
+        // Load forgebot_host - the public-facing URL for webhooks
+        // If not set, construct from server_host and server_port with http://
+        let forgebot_host = match std::env::var("FORGEBOT_FORGEBOT_HOST") {
+            Ok(value) if !value.trim().is_empty() => {
+                info!(
+                    "Using FORGEBOT_FORGEBOT_HOST from environment variable: {}",
+                    value
+                );
+                value
+            }
+            _ => {
+                // Construct from server host and port
+                let constructed = format!("http://{}:{}", server_host, server_port);
+                warn!(
+                    "FORGEBOT_FORGEBOT_HOST not set, using constructed URL: {}. \
+                     For production, set FORGEBOT_FORGEBOT_HOST to your public-facing URL.",
+                    constructed
+                );
+                // Additional warning for localhost bindings
+                if server_host == "127.0.0.1" || server_host == "localhost" {
+                    warn!(
+                        "Server is bound to {} - this URL will only work from the same machine. \
+                         Set FORGEBOT_FORGEBOT_HOST to your public hostname/IP for production use.",
+                        server_host
+                    );
+                }
+                constructed
+            }
+        };
         let bot_username = env_var_with_default("FORGEBOT_FORGEJO_BOT_USERNAME", "forgebot");
         let opencode_binary = env_var_with_default("FORGEBOT_OPENCODE_BINARY", "opencode");
         let worktree_base = env_var_path_with_default(
@@ -67,6 +98,7 @@ impl Config {
         info!("Configuration loaded successfully");
         info!("  FORGEBOT_SERVER_HOST: {}", server_host);
         info!("  FORGEBOT_SERVER_PORT: {}", server_port);
+        info!("  FORGEBOT_FORGEBOT_HOST: {}", forgebot_host);
         info!("  FORGEBOT_WEBHOOK_SECRET: [REDACTED]");
         info!("  FORGEBOT_FORGEJO_URL: {}", forgejo_url);
         info!("  FORGEBOT_FORGEJO_TOKEN: [REDACTED]");
@@ -84,6 +116,7 @@ impl Config {
                 host: server_host,
                 port: server_port,
                 webhook_secret,
+                forgebot_host,
             },
             forgejo: ForgejoConfig {
                 url: forgejo_url,

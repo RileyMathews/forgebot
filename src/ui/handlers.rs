@@ -449,10 +449,7 @@ pub async fn sessions(State(state): State<AppState>) -> impl IntoResponse {
 
 /// Format the webhook URL from config
 fn format_webhook_url(config: &Arc<crate::config::Config>) -> String {
-    format!(
-        "https://{}:{}/webhook",
-        config.server.host, config.server.port
-    )
+    format!("{}/webhook", config.server.forgebot_host)
 }
 
 /// Check if webhook is registered for a repo

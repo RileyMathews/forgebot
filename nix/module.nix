@@ -100,6 +100,21 @@ in
               or configure a reverse proxy for HTTPS.
             '';
           };
+
+          forgeBotHost = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            example = "https://forgebot.example.com";
+            description = ''
+              The public-facing URL where forgebot is accessible from the internet.
+              This is used for webhook URLs displayed in the setup UI and for 
+              registering webhooks with Forgejo.
+              
+              If not set, defaults to http://<server.host>:<server.port>.
+              For production deployments behind a reverse proxy, set this to
+              your public HTTPS URL (e.g., https://forgebot.example.com).
+            '';
+          };
         };
       };
       default = { };
@@ -300,7 +315,9 @@ in
             "FORGEBOT_OPENCODE_WORKTREE_BASE=${cfg.opencode.worktreeBase}"
             "FORGEBOT_OPENCODE_CONFIG_DIR=${cfg.opencode.configDir}"
             "FORGEBOT_DATABASE_PATH=${cfg.database.path}"
-          ] ++ lib.mapAttrsToList (name: value: "${name}=${value}") cfg.environment;
+          ] 
+          ++ lib.optional (cfg.server.forgeBotHost != null) "FORGEBOT_FORGEBOT_HOST=${cfg.server.forgeBotHost}"
+          ++ lib.mapAttrsToList (name: value: "${name}=${value}") cfg.environment;
 
           # Load secrets from file if provided
           EnvironmentFile = lib.optional (cfg.secretsFilePath != null) cfg.secretsFilePath;

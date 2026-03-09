@@ -87,6 +87,7 @@ services.forgebot = {
   # Optional - customize server config (shown with defaults)
   server.host = "127.0.0.1";
   server.port = 8765;
+  server.forgeBotHost = null;  # Set to public URL for production (e.g., "https://forgebot.example.com")
   forgejo.url = "https://git.example.com";
   
   # Required - path to secrets file
@@ -104,11 +105,14 @@ FORGEBOT_FORGEJO_TOKEN=your-forgejo-api-token
 All other configuration values use sensible defaults:
 - `FORGEBOT_SERVER_HOST`: `127.0.0.1`
 - `FORGEBOT_SERVER_PORT`: `8765`
+- `FORGEBOT_FORGEBOT_HOST`: `http://<server_host>:<server_port>` (see note below)
 - `FORGEBOT_FORGEJO_BOT_USERNAME`: `forgebot`
 - `FORGEBOT_OPENCODE_BINARY`: `opencode`
 - `FORGEBOT_OPENCODE_WORKTREE_BASE`: `/var/lib/forgebot/worktrees`
 - `FORGEBOT_OPENCODE_CONFIG_DIR`: `/var/lib/forgebot/opencode-config`
 - `FORGEBOT_DATABASE_PATH`: `/var/lib/forgebot/forgebot.db`
+
+**Important**: `FORGEBOT_FORGEBOT_HOST` should be set to your public-facing URL for production deployments (e.g., `https://forgebot.example.com`). If not set, it defaults to `http://<server_host>:<server_port>`, which may not be accessible from the internet if the server is bound to localhost.
 
 ### 3. Apply the configuration
 
@@ -192,18 +196,19 @@ For non-NixOS systems, follow this alternative deployment path:
    ```
 
 4. **Set environment variables** and run:
-   ```bash
-   export FORGEBOT_WEBHOOK_SECRET="your-webhook-secret-here"
-   export FORGEBOT_FORGEJO_URL="https://git.example.com"
-   export FORGEBOT_FORGEJO_TOKEN="your-forgejo-api-token"
-   
-   # Optional - override defaults
-   export FORGEBOT_SERVER_HOST="127.0.0.1"
-   export FORGEBOT_SERVER_PORT="8765"
-   export FORGEBOT_FORGEJO_BOT_USERNAME="forgebot"
-   
-   forgebot
-   ```
+    ```bash
+    export FORGEBOT_WEBHOOK_SECRET="your-webhook-secret-here"
+    export FORGEBOT_FORGEJO_URL="https://git.example.com"
+    export FORGEBOT_FORGEJO_TOKEN="your-forgejo-api-token"
+    
+    # Optional - override defaults
+    export FORGEBOT_SERVER_HOST="127.0.0.1"
+    export FORGEBOT_SERVER_PORT="8765"
+    export FORGEBOT_FORGEBOT_HOST="https://forgebot.example.com"  # Set for production!
+    export FORGEBOT_FORGEJO_BOT_USERNAME="forgebot"
+    
+    forgebot
+    ```
 
 5. **Write a systemd service unit** at `/etc/systemd/system/forgebot.service`:
 
@@ -226,12 +231,13 @@ For non-NixOS systems, follow this alternative deployment path:
    Environment="FORGEBOT_FORGEJO_URL=https://git.example.com"
    Environment="FORGEBOT_FORGEJO_TOKEN=your-api-token"
    
-   # Optional - defaults shown
-   Environment="FORGEBOT_SERVER_HOST=127.0.0.1"
-   Environment="FORGEBOT_SERVER_PORT=8765"
-   Environment="FORGEBOT_FORGEJO_BOT_USERNAME=forgebot"
-   
-   # Ensure opencode is in PATH
+    # Optional - defaults shown
+    Environment="FORGEBOT_SERVER_HOST=127.0.0.1"
+    Environment="FORGEBOT_SERVER_PORT=8765"
+    Environment="FORGEBOT_FORGEBOT_HOST=https://forgebot.example.com"
+    Environment="FORGEBOT_FORGEJO_BOT_USERNAME=forgebot"
+    
+    # Ensure opencode is in PATH
    Environment="PATH=/usr/local/bin:/usr/bin:/bin"
    Environment="RUST_LOG=info"
    
@@ -279,6 +285,7 @@ These have sensible defaults if not set:
 |----------|---------|-------------|
 | `FORGEBOT_SERVER_HOST` | `127.0.0.1` | Host address to bind HTTP server |
 | `FORGEBOT_SERVER_PORT` | `8765` | TCP port to listen on |
+| `FORGEBOT_FORGEBOT_HOST` | `http://<server_host>:<server_port>` | Public-facing URL where forgebot is accessible. Used for webhook URLs displayed in the UI and for registering webhooks with Forgejo. For production, set this to your public HTTPS URL (e.g., `https://forgebot.example.com`). |
 | `FORGEBOT_FORGEJO_URL` | *(required)* | Base URL of your Forgejo instance — set via `forgejo.url` in NixOS, or as env var for manual deployments |
 | `FORGEBOT_FORGEJO_BOT_USERNAME` | `forgebot` | Username that forgebot operates as |
 | `FORGEBOT_OPENCODE_BINARY` | `opencode` | Path to opencode binary |
