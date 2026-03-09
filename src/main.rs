@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::{info, Level};
+use tracing::{info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
 mod config;
@@ -10,6 +10,7 @@ mod db;
 pub mod forgejo;
 mod session;
 mod webhook;
+mod ui;
 
 #[derive(Parser, Debug)]
 #[command(name = "forgebot")]
@@ -33,7 +34,10 @@ async fn main() -> Result<()> {
     // Parse CLI arguments
     let cli = Cli::parse();
 
-    info!("Starting forgebot daemon...");
+    info!(
+        config_file = ?cli.config.as_deref(),
+        "forgebot starting"
+    );
 
     // Load configuration
     let config = config::Config::load(cli.config.as_deref())
@@ -43,18 +47,21 @@ async fn main() -> Result<()> {
     session::opencode::setup_opencode_config_dir(&config.opencode)
         .context("Failed to set up opencode config directory")?;
 
-    info!("Opencode config directory initialized");
+    info!(
+        config_dir = %config.opencode.config_dir.display(),
+        "Opencode config directory initialized"
+    );
 
     info!(
-        "Configuration loaded successfully (from {:?})",
-        cli.config.as_deref().unwrap_or_else(|| std::path::Path::new("default location"))
+        server_host = %config.server.host,
+        server_port = %config.server.port,
+        forgejo_url = %config.forgejo.url,
+        bot_username = %config.forgejo.bot_username,
+        database_path = %config.database.path.to_string_lossy(),
+        worktree_base = %config.opencode.worktree_base.to_string_lossy(),
+        opencode_binary = %config.opencode.binary,
+        "Configuration loaded successfully"
     );
-    info!("Server will listen on {}:{}", config.server.host, config.server.port);
-    info!("Connected to Forgejo at {}", config.forgejo.url);
-    info!("Bot username: {}", config.forgejo.bot_username);
-    info!("Database path: {}", config.database.path.display());
-    info!("Worktree base: {}", config.opencode.worktree_base.display());
-    info!("Opencode binary: {}", config.opencode.binary);
 
     // Initialize database
     let db_pool = db::init_db(&config.database)
@@ -70,29 +77,47 @@ async fn main() -> Result<()> {
         &config.forgejo.bot_username,
     ).context("Failed to create Forgejo client")?;
 
-    info!("Forgejo client initialized successfully");
+    info!(
+        base_url = %config.forgejo.url,
+        "Forgejo client initialized successfully"
+    );
 
     // Run startup crash recovery before starting the server
-    session::opencode::startup_crash_recovery(&db_pool, &forgejo_client, &config)
-        .await
-        .context("Crash recovery failed (this is non-fatal, continuing startup)")
-        .ok(); // Don't fail startup if crash recovery fails
-
-    info!("Startup crash recovery complete");
+    let recovery_result = session::opencode::startup_crash_recovery(&db_pool, &forgejo_client, &config)
+        .await;
+    
+    match recovery_result {
+        Ok(count) => {
+            info!(
+                recovered_sessions = %count,
+                "Startup crash recovery complete"
+            );
+        }
+        Err(e) => {
+            warn!(
+                error = %e,
+                "Crash recovery encountered an error (non-fatal, continuing startup)"
+            );
+        }
+    }
 
     // Create shared application state
     let config = Arc::new(config);
     let app_state = webhook::AppState::new(config.clone(), db_pool.clone(), forgejo_client.clone());
 
     // Start webhook server - this will block until the server shuts down
-    info!("Starting webhook server...");
+    info!(
+        host = %config.server.host,
+        port = %config.server.port,
+        "Starting webhook server"
+    );
     
     webhook::start_server(app_state)
         .await
         .context("Webhook server failed")?;
 
-    // Server has shut down (normally this only happens on error in Phase 4)
-    info!("Webhook server stopped");
+    // Server has shut down (normally this only happens on error)
+    info!("Webhook server stopped gracefully");
 
     // Close the database pool gracefully
     db_pool.close().await;

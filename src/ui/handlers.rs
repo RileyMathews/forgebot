@@ -1,0 +1,611 @@
+use askama::Template;
+use axum::{
+    extract::{Form, Path as AxumPath, State},
+    http::StatusCode,
+    response::{Html, IntoResponse, Redirect, Response},
+};
+use serde::Deserialize;
+use std::path::Path;
+use std::sync::Arc;
+use tracing::{error, warn};
+
+use crate::db::{
+    get_repo_by_full_name, list_repos, update_repo_env_loader, DbPool, Session,
+};
+use crate::forgejo::ForgejoClient;
+use crate::session::env_loader::load_env;
+use crate::session::worktree::clone_exists;
+use crate::webhook::AppState;
+
+// ============================================================================
+// Templates
+// ============================================================================
+
+#[derive(Template)]
+#[template(path = "dashboard.html")]
+struct DashboardTemplate {
+    repos: Vec<RepoWithStatus>,
+    webhook_url: String,
+}
+
+#[derive(Template)]
+#[template(path = "repo_setup.html")]
+struct RepoSetupTemplate {
+    full_name: String,
+    owner: String,
+    name: String,
+    default_branch: String,
+    env_loader: String,
+    clone_present: bool,
+    clone_command: String,
+    webhook_registered: bool,
+    webhook_url: String,
+    webhook_secret: String,
+    token_valid: bool,
+    opencode_exists: bool,
+    opencode_path: String,
+    config_files_exist: bool,
+    message: Option<String>,
+    success: bool,
+}
+
+#[derive(Template)]
+#[template(path = "sessions.html")]
+struct SessionsTemplate {
+    sessions: Vec<Session>,
+}
+
+// ============================================================================
+// Helper Structs
+// ============================================================================
+
+/// Repository with computed status information
+struct RepoWithStatus {
+    full_name: String,
+    owner: String,
+    name: String,
+    default_branch: String,
+    env_loader: String,
+    clone_present: bool,
+    webhook_registered: bool,
+    session_count: i64,
+}
+
+/// Form data for adding a new repository
+#[derive(Deserialize)]
+pub struct AddRepoForm {
+    full_name: String,
+    default_branch: String,
+    env_loader: String,
+}
+
+/// Form data for updating environment loader
+#[derive(Deserialize)]
+pub struct EnvLoaderForm {
+    env_loader: String,
+}
+
+/// JSON response for environment test
+#[derive(serde::Serialize)]
+struct EnvTestResponse {
+    success: bool,
+    keys: Option<Vec<String>>,
+    error: Option<String>,
+}
+
+// ============================================================================
+// Route Handlers
+// ============================================================================
+
+/// GET /ui - Dashboard showing all repos
+pub async fn dashboard(State(state): State<AppState>) -> impl IntoResponse {
+    // Get all repos from database
+    let repos = match list_repos(&state.db).await {
+        Ok(repos) => repos,
+        Err(e) => {
+            error!("Failed to list repos: {}", e);
+            return internal_error_response(format!("Failed to list repos: {}", e));
+        }
+    };
+
+    // Enrich with status information
+    let mut repos_with_status = Vec::new();
+    for repo in repos {
+        let owner_name: Vec<&str> = repo.full_name.split('/').collect();
+        let owner = owner_name.get(0).unwrap_or(&"").to_string();
+        let name = owner_name.get(1).unwrap_or(&"").to_string();
+
+        // Check if clone exists
+        let clone_present = clone_exists(&state.config.opencode, &repo.full_name);
+
+        // Check webhook status
+        let webhook_registered =
+            check_webhook_status(&state.forgejo, &repo.full_name, &state.config).await;
+
+        // Get session count
+        let session_count = match get_session_count(&state.db, &repo.full_name).await {
+            Ok(count) => count,
+            Err(e) => {
+                warn!("Failed to get session count for {}: {}", repo.full_name, e);
+                0
+            }
+        };
+
+        repos_with_status.push(RepoWithStatus {
+            full_name: repo.full_name.clone(),
+            owner,
+            name,
+            default_branch: repo.default_branch,
+            env_loader: repo.env_loader,
+            clone_present,
+            webhook_registered,
+            session_count,
+        });
+    }
+
+    // Build webhook URL
+    let webhook_url = format_webhook_url(&state.config);
+
+    let template = DashboardTemplate {
+        repos: repos_with_status,
+        webhook_url,
+    };
+
+    match template.render() {
+        Ok(html) => Html(html).into_response(),
+        Err(e) => internal_error_response(format!("Template error: {}", e)),
+    }
+}
+
+/// POST /ui/repos - Add a new repository
+pub async fn add_repo(
+    State(state): State<AppState>,
+    Form(form): Form<AddRepoForm>,
+) -> impl IntoResponse {
+    // Validate the full_name format
+    if !form.full_name.contains('/') {
+        return Redirect::to("/ui").into_response();
+    }
+
+    // Validate env_loader value
+    let env_loader = match form.env_loader.as_str() {
+        "nix" | "direnv" | "none" => form.env_loader.clone(),
+        _ => "none".to_string(),
+    };
+
+    // Generate a UUID for the repo
+    let repo_id = uuid::Uuid::new_v4().to_string();
+
+    // Insert into database
+    if let Err(e) = crate::db::insert_repo(
+        &state.db,
+        &repo_id,
+        &form.full_name,
+        &form.default_branch,
+        &env_loader,
+    )
+    .await
+    {
+        error!("Failed to insert repo: {}", e);
+        return Redirect::to("/ui").into_response();
+    }
+
+    // Parse owner and name for redirect
+    let parts: Vec<&str> = form.full_name.split('/').collect();
+    if parts.len() == 2 {
+        let owner = parts[0];
+        let name = parts[1];
+        Redirect::to(&format!("/ui/repo/{}/{}", owner, name)).into_response()
+    } else {
+        Redirect::to("/ui").into_response()
+    }
+}
+
+/// GET /ui/repo/:owner/:name - Per-repo setup page
+pub async fn repo_setup(
+    State(state): State<AppState>,
+    AxumPath((owner, name)): AxumPath<(String, String)>,
+) -> impl IntoResponse {
+    let full_name = format!("{}/{}", owner, name);
+
+    // Get repo from database
+    let repo = match get_repo_by_full_name(&state.db, &full_name).await {
+        Ok(Some(repo)) => repo,
+        Ok(None) => {
+            return Redirect::to("/ui").into_response();
+        }
+        Err(e) => {
+            error!("Failed to get repo: {}", e);
+            return internal_error_response(format!("Failed to get repo: {}", e));
+        }
+    };
+
+    // Check clone status
+    let clone_present = clone_exists(&state.config.opencode, &full_name);
+
+    // Build clone command
+    let clone_command = format_clone_command(&state.config, &full_name, &repo.default_branch);
+
+    // Build webhook URL and secret
+    let webhook_url = format_webhook_url(&state.config);
+    let webhook_secret = state.config.server.webhook_secret.clone();
+
+    // Check webhook registration status
+    let webhook_registered =
+        check_webhook_status(&state.forgejo, &full_name, &state.config).await;
+
+    // Verify token permissions
+    let token_valid = state
+        .forgejo
+        .check_token_permissions(&full_name)
+        .await
+        .unwrap_or(false);
+
+    // Check opencode binary
+    let opencode_path = &state.config.opencode.binary;
+    let opencode_exists = which::which(opencode_path).is_ok()
+        || Path::new(opencode_path).exists();
+
+    // Check config files (basic check for config dir existence)
+    let config_files_exist = state.config.opencode.config_dir.exists();
+
+    let template = RepoSetupTemplate {
+        full_name: full_name.clone(),
+        owner: owner.clone(),
+        name: name.clone(),
+        default_branch: repo.default_branch,
+        env_loader: repo.env_loader,
+        clone_present,
+        clone_command,
+        webhook_registered,
+        webhook_url,
+        webhook_secret,
+        token_valid,
+        opencode_exists,
+        opencode_path: opencode_path.clone(),
+        config_files_exist,
+        message: None,
+        success: true,
+    };
+
+    match template.render() {
+        Ok(html) => Html(html).into_response(),
+        Err(e) => internal_error_response(format!("Template error: {}", e)),
+    }
+}
+
+/// POST /ui/repo/:owner/:name/webhook - Register webhook
+pub async fn register_webhook(
+    State(state): State<AppState>,
+    AxumPath((owner, name)): AxumPath<(String, String)>,
+) -> impl IntoResponse {
+    let full_name = format!("{}/{}", owner, name);
+
+    // Get repo from database to ensure it exists
+    let _repo = match get_repo_by_full_name(&state.db, &full_name).await {
+        Ok(Some(repo)) => repo,
+        Ok(None) => {
+            return Redirect::to("/ui").into_response();
+        }
+        Err(e) => {
+            error!("Failed to get repo: {}", e);
+            return internal_error_response(format!("Failed to get repo: {}", e));
+        }
+    };
+
+    // Build webhook URL
+    let webhook_url = format_webhook_url(&state.config);
+
+    // Create webhook
+    let result = state
+        .forgejo
+        .create_repo_webhook(&full_name, &webhook_url, &state.config.server.webhook_secret)
+        .await;
+
+    let (message, success) = match result {
+        Ok(_) => ("Webhook registered successfully".to_string(), true),
+        Err(e) => {
+            error!("Failed to create webhook: {}", e);
+            (format!("Failed to create webhook: {}", e), false)
+        }
+    };
+
+    // Re-render the setup page with the message
+    render_repo_setup_with_message(state, owner, name, message, success).await
+}
+
+/// POST /ui/repo/:owner/:name/env-loader - Update environment loader
+pub async fn save_env_loader(
+    State(state): State<AppState>,
+    AxumPath((owner, name)): AxumPath<(String, String)>,
+    Form(form): Form<EnvLoaderForm>,
+) -> impl IntoResponse {
+    let full_name = format!("{}/{}", owner, name);
+
+    // Validate env_loader value
+    let env_loader = match form.env_loader.as_str() {
+        "nix" | "direnv" | "none" => form.env_loader.clone(),
+        _ => "none".to_string(),
+    };
+
+    // Update in database
+    let (message, success) = match update_repo_env_loader(&state.db, &full_name, &env_loader).await
+    {
+        Ok(_) => ("Environment loader updated".to_string(), true),
+        Err(e) => {
+            error!("Failed to update env_loader: {}", e);
+            (format!("Failed to update: {}", e), false)
+        }
+    };
+
+    // Re-render the setup page with the message
+    render_repo_setup_with_message(state, owner, name, message, success).await
+}
+
+/// POST /ui/repo/:owner/:name/test-env - Test environment loading
+pub async fn test_env(
+    State(state): State<AppState>,
+    AxumPath((owner, name)): AxumPath<(String, String)>,
+) -> impl IntoResponse {
+    let full_name = format!("{}/{}", owner, name);
+
+    // Get repo from database
+    let repo = match get_repo_by_full_name(&state.db, &full_name).await {
+        Ok(Some(repo)) => repo,
+        Ok(None) => {
+            return axum::Json(EnvTestResponse {
+                success: false,
+                keys: None,
+                error: Some("Repository not found".to_string()),
+            })
+            .into_response();
+        }
+        Err(e) => {
+            return axum::Json(EnvTestResponse {
+                success: false,
+                keys: None,
+                error: Some(format!("Database error: {}", e)),
+            })
+            .into_response();
+        }
+    };
+
+    // If env_loader is none, return empty
+    if repo.env_loader == "none" {
+        return axum::Json(EnvTestResponse {
+            success: true,
+            keys: Some(vec![]),
+            error: None,
+        })
+        .into_response();
+    }
+
+    // Get the bare clone path for testing
+    let bare_clone_path = get_bare_clone_path(&state.config, &full_name);
+
+    // Run the environment loader with 30-second timeout
+    // We use the bare clone path since that's what exists during setup
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        load_env(&repo.env_loader, &bare_clone_path),
+    )
+    .await;
+
+    match result {
+        Ok(Ok(env_vars)) => {
+            // Extract only the keys, not the values (for security)
+            let keys: Vec<String> = env_vars.keys().cloned().collect();
+            axum::Json(EnvTestResponse {
+                success: true,
+                keys: Some(keys),
+                error: None,
+            })
+            .into_response()
+        }
+        Ok(Err(e)) => axum::Json(EnvTestResponse {
+            success: false,
+            keys: None,
+            error: Some(format!("Environment loading failed: {}", e)),
+        })
+        .into_response(),
+        Err(_) => axum::Json(EnvTestResponse {
+            success: false,
+            keys: None,
+            error: Some("Environment loading timed out (30s)".to_string()),
+        })
+        .into_response(),
+    }
+}
+
+/// GET /ui/sessions - List all sessions
+pub async fn sessions(State(state): State<AppState>) -> impl IntoResponse {
+    // Get all active sessions (all non-terminal states)
+    let all_sessions = match crate::db::get_sessions_in_state(
+        &state.db,
+        &["planning", "building", "idle", "busy", "error"],
+    )
+    .await
+    {
+        Ok(sessions) => sessions,
+        Err(e) => {
+            error!("Failed to list sessions: {}", e);
+            return internal_error_response(format!("Failed to list sessions: {}", e));
+        }
+    };
+
+    let template = SessionsTemplate {
+        sessions: all_sessions,
+    };
+
+    match template.render() {
+        Ok(html) => Html(html).into_response(),
+        Err(e) => internal_error_response(format!("Template error: {}", e)),
+    }
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Format the webhook URL from config
+fn format_webhook_url(config: &Arc<crate::config::Config>) -> String {
+    format!(
+        "https://{}:{}/webhook",
+        config.server.host, config.server.port
+    )
+}
+
+/// Check if webhook is registered for a repo
+async fn check_webhook_status(
+    forgejo: &ForgejoClient,
+    full_name: &str,
+    config: &Arc<crate::config::Config>,
+) -> bool {
+    let expected_url = format_webhook_url(config);
+
+    match forgejo.list_repo_webhooks(full_name).await {
+        Ok(webhooks) => webhooks
+            .iter()
+            .any(|w| w.url == expected_url && w.active),
+        Err(e) => {
+            warn!("Failed to list webhooks for {}: {}", full_name, e);
+            false
+        }
+    }
+}
+
+/// Get the count of active sessions for a repo
+async fn get_session_count(db: &DbPool, full_name: &str) -> anyhow::Result<i64> {
+    let sessions =
+        crate::db::get_sessions_in_state(db, &["planning", "building", "idle", "busy", "error"])
+            .await?;
+    let count = sessions
+        .iter()
+        .filter(|s| s.repo_full_name == full_name)
+        .count() as i64;
+    Ok(count)
+}
+
+/// Format the git clone command for display
+fn format_clone_command(
+    config: &Arc<crate::config::Config>,
+    full_name: &str,
+    _default_branch: &str,
+) -> String {
+    let parts: Vec<&str> = full_name.split('/').collect();
+    let owner = parts.get(0).unwrap_or(&"");
+    let repo = parts.get(1).unwrap_or(&"");
+    let repo_dir = format!("{}_{}", owner, repo);
+    let worktree_base = config.opencode.worktree_base.display();
+
+    format!(
+        "git clone --bare https://{}/{}/{}.git {}/{}/",
+        config.forgejo.url, owner, repo, worktree_base, repo_dir
+    )
+}
+
+/// Get the bare clone path for a repo
+fn get_bare_clone_path(
+    config: &Arc<crate::config::Config>,
+    full_name: &str,
+) -> std::path::PathBuf {
+    let parts: Vec<&str> = full_name.split('/').collect();
+    let owner = parts.get(0).unwrap_or(&"").to_lowercase();
+    let repo = parts.get(1).unwrap_or(&"").to_lowercase();
+    let repo_dir = format!("{}_{}", owner, repo);
+
+    config.opencode.worktree_base.join(repo_dir)
+}
+
+/// Render the repo setup page with a status message
+async fn render_repo_setup_with_message(
+    state: AppState,
+    owner: String,
+    name: String,
+    message: String,
+    success: bool,
+) -> Response {
+    let full_name = format!("{}/{}", owner, name);
+
+    // Get repo from database
+    let repo = match get_repo_by_full_name(&state.db, &full_name).await {
+        Ok(Some(repo)) => repo,
+        Ok(None) => {
+            return Redirect::to("/ui").into_response();
+        }
+        Err(e) => {
+            return internal_error_response(format!("Failed to get repo: {}", e));
+        }
+    };
+
+    // Check clone status
+    let clone_present = clone_exists(&state.config.opencode, &full_name);
+
+    // Build clone command
+    let clone_command = format_clone_command(&state.config, &full_name, &repo.default_branch);
+
+    // Build webhook URL and secret
+    let webhook_url = format_webhook_url(&state.config);
+    let webhook_secret = state.config.server.webhook_secret.clone();
+
+    // Check webhook registration status
+    let webhook_registered =
+        check_webhook_status(&state.forgejo, &full_name, &state.config).await;
+
+    // Verify token permissions
+    let token_valid = state
+        .forgejo
+        .check_token_permissions(&full_name)
+        .await
+        .unwrap_or(false);
+
+    // Check opencode binary
+    let opencode_path = &state.config.opencode.binary;
+    let opencode_exists = which::which(opencode_path).is_ok()
+        || Path::new(opencode_path).exists();
+
+    // Check config files
+    let config_files_exist = state.config.opencode.config_dir.exists();
+
+    let template = RepoSetupTemplate {
+        full_name,
+        owner,
+        name,
+        default_branch: repo.default_branch,
+        env_loader: repo.env_loader,
+        clone_present,
+        clone_command,
+        webhook_registered,
+        webhook_url,
+        webhook_secret,
+        token_valid,
+        opencode_exists,
+        opencode_path: opencode_path.clone(),
+        config_files_exist,
+        message: Some(message),
+        success,
+    };
+
+    match template.render() {
+        Ok(html) => Html(html).into_response(),
+        Err(e) => internal_error_response(format!("Template error: {}", e)),
+    }
+}
+
+/// Create an internal error response
+fn internal_error_response(message: String) -> Response {
+    // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
+    Response::builder()
+        .status(StatusCode::INTERNAL_SERVER_ERROR)
+        .body(format!(
+            r#"<!DOCTYPE html>
+<html><body>
+<h1>Internal Server Error</h1>
+<p>{}</p>
+<p><a href="/ui">Return to Dashboard</a></p>
+</body></html>"#,
+            message
+        )
+        .into())
+        .unwrap()
+}

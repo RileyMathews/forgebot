@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Forgebot{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h2>📁 Repositories</h2>
+    {% if repos.is_empty() %}
+        <p>No repositories configured yet.</p>
+    {% else %}
+        <table>
+            <thead>
+                <tr>
+                    <th>Repository</th>
+                    <th>Default Branch</th>
+                    <th>Clone Status</th>
+                    <th>Webhook</th>
+                    <th>Active Sessions</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for repo in repos %}
+                <tr>
+                    <td><strong>{{ repo.full_name }}</strong></td>
+                    <td>{{ repo.default_branch }}</td>
+                    <td>
+                        {% if repo.clone_present %}
+                            <span class="status-badge status-ok">Present</span>
+                        {% else %}
+                            <span class="status-badge status-error">Missing</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if repo.webhook_registered %}
+                            <span class="status-badge status-ok">Registered</span>
+                        {% else %}
+                            <span class="status-badge status-warn">Not Registered</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ repo.session_count }}</td>
+                    <td>
+                        <a href="/ui/repo/{{ repo.owner }}/{{ repo.name }}" class="btn">Setup</a>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% endif %}
+</div>
+
+<div class="card">
+    <h2>➕ Add Repository</h2>
+    <form action="/ui/repos" method="POST">
+        <div class="form-group">
+            <label for="full_name">Repository Full Name (owner/repo)</label>
+            <input type="text" id="full_name" name="full_name" placeholder="e.g., alice/myrepo" required>
+        </div>
+        
+        <div class="form-group">
+            <label for="default_branch">Default Branch</label>
+            <input type="text" id="default_branch" name="default_branch" value="main" required>
+        </div>
+        
+        <div class="form-group">
+            <label>Environment Loader</label>
+            <div class="radio-group">
+                <label>
+                    <input type="radio" name="env_loader" value="none" checked>
+                    None
+                </label>
+                <label>
+                    <input type="radio" name="env_loader" value="direnv">
+                    direnv
+                </label>
+                <label>
+                    <input type="radio" name="env_loader" value="nix">
+                    Nix
+                </label>
+            </div>
+        </div>
+        
+        <button type="submit" class="btn">Add Repository</button>
+    </form>
+</div>
+
+{% if !webhook_url.is_empty() %}
+<div class="card">
+    <h2>🔗 Webhook Configuration</h2>
+    <p>Configure webhooks in your repositories to point to:</p>
+    <pre>{{ webhook_url }}</pre>
+</div>
+{% endif %}
+{% endblock %}
