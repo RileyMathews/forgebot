@@ -14,6 +14,27 @@ pub struct SessionTrigger {
     pub comment_body: String, // for revision phase context
 }
 
+/// Comment text helpers for consistent bot messaging
+pub fn comment_text_thinking() -> String {
+    "🤖 forgebot is thinking...".to_string()
+}
+
+pub fn comment_text_working() -> String {
+    "🤖 forgebot is working on it...".to_string()
+}
+
+pub fn comment_text_busy() -> String {
+    "🤖 forgebot is currently working on this issue. Please wait for the current operation to complete.".to_string()
+}
+
+pub fn comment_text_error(err: &str) -> String {
+    format!("❌ Error: {}", err)
+}
+
+pub fn comment_text_no_context() -> String {
+    "❌ I don't have context for this PR. Please ensure this PR was created through forgebot.".to_string()
+}
+
 /// Derive a deterministic session ID from repository and issue
 ///
 /// Format: `ses_{issue_id}_{sanitized_owner}_{sanitized_repo}`

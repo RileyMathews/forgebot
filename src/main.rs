@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::{error, info, Level};
+use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 
 mod config;
@@ -80,15 +80,14 @@ async fn main() -> Result<()> {
 
     info!("Startup crash recovery complete");
 
-    // Wrap config in Arc for sharing across handlers
+    // Create shared application state
     let config = Arc::new(config);
+    let app_state = webhook::AppState::new(config.clone(), db_pool.clone(), forgejo_client.clone());
 
     // Start webhook server - this will block until the server shuts down
     info!("Starting webhook server...");
     
-    // Note: In Phase 4, the server just listens forever
-    // Phase 5+ will add background workers and graceful shutdown
-    webhook::start_server(config)
+    webhook::start_server(app_state)
         .await
         .context("Webhook server failed")?;
 

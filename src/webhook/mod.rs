@@ -16,17 +16,26 @@ use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 use crate::config::Config;
+use crate::db::DbPool;
+use crate::forgejo::ForgejoClient;
 use models::*;
 
-/// Webhook secret wrapper for sharing across handlers
-pub struct WebhookSecret {
-    pub secret: String,
+/// Application state shared across all handlers
+#[derive(Clone)]
+pub struct AppState {
+    pub config: Arc<Config>,
+    pub db: DbPool,
+    pub forgejo: ForgejoClient,
 }
 
-/// Extractor for verified webhook payload with signature verification
-pub struct VerifiedWebhook<T> {
-    pub event_type: GiteaEvent,
-    pub payload: T,
+impl AppState {
+    pub fn new(config: Arc<Config>, db: DbPool, forgejo: ForgejoClient) -> Self {
+        Self {
+            config,
+            db,
+            forgejo,
+        }
+    }
 }
 
 /// HMAC-SHA256 verification middleware/extractor
@@ -83,7 +92,7 @@ pub async fn extract_and_verify_body(
         .map(|s| s.to_string());
 
     // Now consume the request to get the body
-    let (parts, body) = request.into_parts();
+    let (_parts, body) = request.into_parts();
 
     // Get the signature value
     let signature = match signature_header {
@@ -135,11 +144,11 @@ pub async fn extract_and_verify_body(
 
 /// Handler for POST /webhook
 async fn webhook_handler(
-    State(config): State<Arc<Config>>,
+    State(state): State<AppState>,
     request: Request,
 ) -> Response {
     // Create verifier
-    let verifier = WebhookVerifier::new(config.server.webhook_secret.clone());
+    let verifier = WebhookVerifier::new(state.config.server.webhook_secret.clone());
 
     // Verify signature and get body
     let (body, event_type) = match extract_and_verify_body(request, &verifier).await {
@@ -162,7 +171,7 @@ async fn webhook_handler(
                         .unwrap();
                 }
             };
-            match handlers::handle_issue_comment(payload).await {
+            match handlers::handle_issue_comment(payload, &state.db, &state.forgejo, &state.config).await {
                 Ok(response) => response,
                 Err(response) => response,
             }
@@ -178,7 +187,7 @@ async fn webhook_handler(
                         .unwrap();
                 }
             };
-            match handlers::handle_pull_request(payload).await {
+            match handlers::handle_pull_request(payload, &state.db, &state.forgejo, &state.config).await {
                 Ok(response) => response,
                 Err(response) => response,
             }
@@ -194,7 +203,7 @@ async fn webhook_handler(
                         .unwrap();
                 }
             };
-            match handlers::handle_pull_request_review_comment(payload).await {
+            match handlers::handle_pull_request_review_comment(payload, &state.db, &state.forgejo, &state.config).await {
                 Ok(response) => response,
                 Err(response) => response,
             }
@@ -208,18 +217,18 @@ async fn webhook_handler(
 }
 
 /// Create the webhook router
-pub fn create_webhook_router(config: Arc<Config>) -> Router {
+pub fn create_webhook_router(state: AppState) -> Router {
     Router::new()
         .route("/webhook", post(webhook_handler))
-        .with_state(config)
+        .with_state(state)
 }
 
 /// Start the webhook server
-pub async fn start_server(config: Arc<Config>) -> Result<()> {
-    let host = config.server.host.clone();
-    let port = config.server.port;
+pub async fn start_server(state: AppState) -> Result<()> {
+    let host = state.config.server.host.clone();
+    let port = state.config.server.port;
 
-    let app = create_webhook_router(config);
+    let app = create_webhook_router(state);
 
     let listener = tokio::net::TcpListener::bind(format!("{}:{}", host, port))
         .await
