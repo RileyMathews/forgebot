@@ -197,6 +197,13 @@ pub async fn run_opencode(
         found.unwrap_or_else(|| binary.to_string())
     };
 
+    // Ensure worktree directory exists
+    if !worktree_path.exists() {
+        info!("Creating worktree directory: {}", worktree_path.display());
+        std::fs::create_dir_all(worktree_path)
+            .with_context(|| format!("Failed to create worktree directory: {}", worktree_path.display()))?;
+    }
+
     // Build the command
     let mut cmd = Command::new(&binary_path);
     cmd.arg("run")
@@ -215,10 +222,19 @@ pub async fn run_opencode(
         binary, binary_path, worktree_path.display()
     );
 
-    let output = cmd
-        .output()
-        .await
-        .with_context(|| format!("Failed to spawn opencode process: {} (resolved to {})", binary, binary_path))?;
+    let output = match cmd.output().await {
+        Ok(output) => output,
+        Err(e) => {
+            error!(
+                "Failed to spawn opencode process: {} (resolved to {}): kind={:?}, os_error={:?}",
+                binary, binary_path, e.kind(), e.raw_os_error()
+            );
+            return Err(anyhow!(
+                "Failed to spawn opencode process: {} (resolved to {}): {}",
+                binary, binary_path, e
+            ));
+        }
+    };
 
     let exit_code = output.status.code().unwrap_or(-1);
     let stdout = String::from_utf8_lossy(&output.stdout);
