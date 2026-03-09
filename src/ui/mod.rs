@@ -1,8 +1,8 @@
 pub mod handlers;
 
 use axum::{
-    routing::{get, post},
     Router,
+    routing::{get, post},
 };
 
 use crate::webhook::AppState;
@@ -28,9 +28,11 @@ pub fn create_ui_router(state: AppState) -> Router {
             post(handlers::save_env_loader),
         )
         // Test environment (POST /ui/repo/:owner/:name/test-env)
+        .route("/repo/:owner/:name/test-env", post(handlers::test_env))
+        // Retry clone (POST /ui/repo/:owner/:name/retry-clone)
         .route(
-            "/repo/:owner/:name/test-env",
-            post(handlers::test_env),
+            "/repo/:owner/:name/retry-clone",
+            post(handlers::retry_clone),
         )
         // Sessions list (GET /ui/sessions)
         .route("/sessions", get(handlers::sessions))

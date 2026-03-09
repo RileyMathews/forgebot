@@ -6,7 +6,7 @@ use tokio::process::Command;
 use tracing::{error, info};
 
 use crate::config::Config;
-use crate::db::{DbPool, update_repo_clone_status};
+use crate::db::{DbPool, update_repo_clone_status, validate_repo_full_name};
 use crate::session::worktree::bare_clone_path;
 
 /// Timeout for git clone operations (10 minutes)
@@ -29,6 +29,9 @@ const CLONE_TIMEOUT: Duration = Duration::from_secs(600);
 /// # Returns
 /// Result<()> - Ok on successful clone, Err otherwise
 pub async fn perform_clone(db: &DbPool, config: &Arc<Config>, repo_full_name: &str) -> Result<()> {
+    // Validate repo_full_name format as defense-in-depth
+    validate_repo_full_name(repo_full_name).context("repository name validation failed")?;
+
     info!(repo = %repo_full_name, "Starting repository clone");
 
     // Update status to "cloning" before starting

@@ -19,16 +19,48 @@
 {% endif %}
 
 <!-- Step 1: Clone -->
-<div class="step {% if clone_present %}complete{% else %}pending{% endif %}">
+{% if clone_status == "pending" %}
+<div class="step pending">
     <h3>Step 1: Clone Repository</h3>
-    {% if clone_present %}
-        <p><span class="status-badge status-ok">✓ Complete</span> Bare clone is present.</p>
-    {% else %}
-        <p><span class="status-badge status-warn">Pending</span> Repository needs to be cloned.</p>
-        <p>Run the following command on the server:</p>
-        <pre>{{ clone_command }}</pre>
-    {% endif %}
+    <p><span class="status-badge status-pending">⏳ Pending</span> Waiting to clone...</p>
 </div>
+{% else %}
+    {% if clone_status == "cloning" %}
+    <div class="step in-progress">
+        <h3>Step 1: Clone Repository</h3>
+        <p><span class="status-badge status-cloning">🔄 Cloning</span> Clone is in progress. This may take a minute...</p>
+        <div class="spinner"></div>
+    </div>
+    {% else %}
+        {% if clone_status == "ready" %}
+        <div class="step complete">
+            <h3>Step 1: Clone Repository</h3>
+            <p><span class="status-badge status-ok">✓ Complete</span> Repository cloned successfully.</p>
+        </div>
+        {% else %}
+            {% if clone_status == "failed" %}
+            <div class="step failed">
+                <h3>Step 1: Clone Repository</h3>
+                <p><span class="status-badge status-error">✗ Failed</span> Clone failed.</p>
+                {% if clone_error.is_some() %}
+                <details class="clone-error-details">
+                    <summary>Error Details</summary>
+                    <pre>{{ clone_error.as_ref().unwrap() }}</pre>
+                </details>
+                {% endif %}
+                <form method="POST" action="/ui/repo/{{ owner }}/{{ name }}/retry-clone" class="retry-form">
+                    <button type="submit" class="btn btn-primary">Retry Clone</button>
+                </form>
+            </div>
+            {% else %}
+            <div class="step pending">
+                <h3>Step 1: Clone Repository</h3>
+                <p><span class="status-badge status-pending">⏳ Unknown</span> Clone status unknown.</p>
+            </div>
+            {% endif %}
+        {% endif %}
+    {% endif %}
+{% endif %}
 
 <!-- Step 2: Webhook -->
 <div class="step {% if webhook_registered %}complete{% else %}pending{% endif %}">
@@ -43,7 +75,10 @@
             <p><strong>Secret:</strong> <code>{{ webhook_secret }}</code></p>
             
             <form action="/ui/repo/{{ owner }}/{{ name }}/webhook" method="POST" style="margin-top: 1rem;">
-                <button type="submit" class="btn btn-success">Register Webhook</button>
+                <button type="submit" class="btn btn-success" {% if clone_status != "ready" %}disabled{% endif %}>Register Webhook</button>
+                {% if clone_status != "ready" %}
+                <p class="help-text">Waiting for repository clone to complete...</p>
+                {% endif %}
             </form>
         </div>
     {% endif %}

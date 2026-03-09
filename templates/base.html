@@ -240,6 +240,99 @@
             gap: 0.25rem;
             font-weight: normal;
         }
+
+        .status-pending {
+            background: #e0e0e0;
+            color: #666;
+        }
+
+        .status-cloning {
+            background: #2196F3;
+            color: #fff;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 0.25rem;
+            font-size: 0.875rem;
+            font-weight: 600;
+        }
+
+        .badge-pending {
+            background-color: #e0e0e0;
+            color: #666;
+        }
+
+        .badge-cloning {
+            background-color: #2196F3;
+            color: #fff;
+        }
+
+        .badge-success {
+            background-color: #4CAF50;
+            color: #fff;
+        }
+
+        .badge-error {
+            background-color: #f44336;
+            color: #fff;
+        }
+
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #2196F3;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            animation: spin 1s linear infinite;
+            margin: 1rem 0;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .clone-error-details {
+            margin: 1rem 0;
+            padding: 0.75rem;
+            background-color: #fff3cd;
+            border: 1px solid #ffc107;
+            border-radius: 0.25rem;
+        }
+
+        .clone-error-details pre {
+            background-color: #f5f5f5;
+            padding: 0.5rem;
+            border-radius: 0.25rem;
+            font-size: 0.75rem;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .retry-form {
+            margin-top: 1rem;
+        }
+
+        .help-text {
+            color: #666;
+            font-size: 0.875rem;
+            margin-top: 0.5rem;
+        }
+
+        .step.in-progress {
+            border-left-color: #2196F3;
+        }
+
+        .step.failed {
+            border-left-color: #f44336;
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
     </style>
 </head>
 <body>

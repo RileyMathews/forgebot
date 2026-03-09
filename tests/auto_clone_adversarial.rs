@@ -220,11 +220,11 @@ async fn test_retry_clone_succeeds_from_failed_status() {
 }
 
 // ============================================================================
-// Test 4: Retry From Pending Status Succeeds
+// Test 4: Retry From Pending Status is Rejected (to prevent race conditions)
 // ============================================================================
 
 #[tokio::test]
-async fn test_retry_clone_succeeds_from_pending_status() {
+async fn test_retry_clone_rejected_from_pending_status() {
     let (pool, test_dir) = setup_test_db().await;
 
     // Setup: Insert repo with "pending" status (initial state)
@@ -237,10 +237,14 @@ async fn test_retry_clone_succeeds_from_pending_status() {
         .await
         .expect("Failed to call reset_clone_status_if_failed");
 
-    // Assert: Should return true (update succeeded)
-    assert!(result, "Retry should succeed from 'pending' status");
+    // Assert: Should return false (no reset needed, already pending)
+    // This prevents concurrent retries from all succeeding
+    assert!(
+        !result,
+        "Retry should be rejected from 'pending' status to prevent race conditions"
+    );
 
-    // Verify status is still "pending" (idempotent)
+    // Verify status is still "pending"
     let repo = get_repo_by_full_name(&pool, "diana/repo")
         .await
         .expect("Failed to get repo")

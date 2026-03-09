@@ -2,11 +2,17 @@ use axum::response::Response;
 use tracing::{error, info, warn};
 
 use crate::config::Config;
-use crate::db::{DbPool, get_repo_by_full_name, get_session_by_issue, get_session_by_pr, insert_session, update_session_pr_id, add_pending_worktree, NewSession};
+use crate::db::{
+    DbPool, NewSession, add_pending_worktree, get_repo_by_full_name, get_session_by_issue,
+    get_session_by_pr, insert_session, update_session_pr_id,
+};
 use crate::forgejo::ForgejoClient;
-use crate::session::{SessionTrigger, derive_session_id, comment_text_thinking, comment_text_working, comment_text_busy, comment_text_error, comment_text_no_context};
 use crate::session::opencode::dispatch_session;
-use crate::session::worktree::{worktree_path, remove_worktree};
+use crate::session::worktree::{remove_worktree, worktree_path};
+use crate::session::{
+    SessionTrigger, comment_text_busy, comment_text_error, comment_text_no_context,
+    comment_text_thinking, comment_text_working, derive_session_id,
+};
 
 use super::models::*;
 
@@ -27,7 +33,10 @@ pub async fn handle_issue_comment(
 
     // 1. Ignore if comment author == config.forgejo.bot_username (loop prevention)
     if payload.sender.login == config.forgejo.bot_username {
-        info!("Ignoring comment from bot user '{}' (loop prevention)", config.forgejo.bot_username);
+        info!(
+            "Ignoring comment from bot user '{}' (loop prevention)",
+            config.forgejo.bot_username
+        );
         // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
         return Ok(Response::builder()
             .status(200)
@@ -41,7 +50,10 @@ pub async fn handle_issue_comment(
             // Repo exists and is watched, continue processing
         }
         Ok(None) => {
-            info!("Repository '{}' not watched, ignoring comment", payload.repository.full_name);
+            info!(
+                "Repository '{}' not watched, ignoring comment",
+                payload.repository.full_name
+            );
             // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
             return Ok(Response::builder()
                 .status(200)
@@ -49,7 +61,10 @@ pub async fn handle_issue_comment(
                 .unwrap());
         }
         Err(e) => {
-            error!("Failed to check repo {}: {}", payload.repository.full_name, e);
+            error!(
+                "Failed to check repo {}: {}",
+                payload.repository.full_name, e
+            );
             // Continue processing - don't make Forgejo retry
         }
     }
@@ -76,13 +91,19 @@ pub async fn handle_issue_comment(
         Ok(Some(session)) => {
             // Check if session is busy
             if session.state == "planning" || session.state == "building" {
-                info!("Session {} is busy (state: {}), posting busy comment", session.id, session.state);
+                info!(
+                    "Session {} is busy (state: {}), posting busy comment",
+                    session.id, session.state
+                );
                 let busy_msg = comment_text_busy();
-                if let Err(e) = forgejo.post_issue_comment(
-                    &payload.repository.full_name,
-                    payload.issue.number,
-                    &busy_msg,
-                ).await {
+                if let Err(e) = forgejo
+                    .post_issue_comment(
+                        &payload.repository.full_name,
+                        payload.issue.number,
+                        &busy_msg,
+                    )
+                    .await
+                {
                     error!("Failed to post busy comment: {}", e);
                 }
                 // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
@@ -98,11 +119,13 @@ pub async fn handle_issue_comment(
         Err(e) => {
             error!("Failed to get session: {}", e);
             let err_msg = comment_text_error(&format!("Failed to load session: {}", e));
-            let _ = forgejo.post_issue_comment(
-                &payload.repository.full_name,
-                payload.issue.number,
-                &err_msg,
-            ).await;
+            let _ = forgejo
+                .post_issue_comment(
+                    &payload.repository.full_name,
+                    payload.issue.number,
+                    &err_msg,
+                )
+                .await;
             // Return 200 so Forgejo doesn't retry; Response::builder() cannot fail with standard strings
             return Ok(Response::builder()
                 .status(200)
@@ -120,13 +143,20 @@ pub async fn handle_issue_comment(
     };
 
     // Check if session exists and create if not
-    let existing_session = get_session_by_issue(db, &payload.repository.full_name, issue_id).await.ok().flatten();
-    
+    let existing_session = get_session_by_issue(db, &payload.repository.full_name, issue_id)
+        .await
+        .ok()
+        .flatten();
+
     let _session_record = if let Some(session) = existing_session {
         session
     } else {
         // Create new session
-        let worktree_path = worktree_path(&config.opencode, &payload.repository.full_name, payload.issue.number);
+        let worktree_path = worktree_path(
+            &config.opencode,
+            &payload.repository.full_name,
+            payload.issue.number,
+        );
         let new_session = NewSession {
             id: uuid::Uuid::new_v4().to_string(),
             repo_full_name: payload.repository.full_name.clone(),
@@ -136,22 +166,24 @@ pub async fn handle_issue_comment(
             worktree_path: worktree_path.display().to_string(),
             state: "idle".to_string(),
         };
-        
+
         if let Err(e) = insert_session(db, &new_session).await {
             error!("Failed to create session: {}", e);
             let err_msg = comment_text_error(&format!("Failed to create session: {}", e));
-            let _ = forgejo.post_issue_comment(
-                &payload.repository.full_name,
-                payload.issue.number,
-                &err_msg,
-            ).await;
+            let _ = forgejo
+                .post_issue_comment(
+                    &payload.repository.full_name,
+                    payload.issue.number,
+                    &err_msg,
+                )
+                .await;
             // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
             return Ok(Response::builder()
                 .status(200)
                 .body("OK - error logged".into())
                 .unwrap());
         }
-        
+
         // Retrieve the newly created session
         match get_session_by_issue(db, &payload.repository.full_name, issue_id).await {
             Ok(Some(session)) => session,
@@ -172,12 +204,15 @@ pub async fn handle_issue_comment(
         "build" => comment_text_working(),
         _ => comment_text_thinking(),
     };
-    
-    if let Err(e) = forgejo.post_issue_comment(
-        &payload.repository.full_name,
-        payload.issue.number,
-        &ack_msg,
-    ).await {
+
+    if let Err(e) = forgejo
+        .post_issue_comment(
+            &payload.repository.full_name,
+            payload.issue.number,
+            &ack_msg,
+        )
+        .await
+    {
         error!("Failed to post acknowledgement comment: {}", e);
     }
 
@@ -197,8 +232,10 @@ pub async fn handle_issue_comment(
 
     tokio::spawn(async move {
         if let Err(e) = dispatch_session(&db_clone, &forgejo_clone, &config_clone, trigger).await {
-            error!("dispatch_session failed for {} issue {}: {}", 
-                payload.repository.full_name, payload.issue.number, e);
+            error!(
+                "dispatch_session failed for {} issue {}: {}",
+                payload.repository.full_name, payload.issue.number, e
+            );
         }
     });
 
@@ -216,12 +253,12 @@ pub async fn handle_issue_comment(
 /// - anything else = use current session state (default to plan)
 fn parse_action_from_comment(body: &str) -> String {
     let body_lower = body.to_lowercase();
-    
+
     // Look for @forgebot followed by action keyword
     if let Some(idx) = body_lower.find("@forgebot") {
         let after_trigger = &body_lower[idx..];
         let words: Vec<&str> = after_trigger.split_whitespace().collect();
-        
+
         // Check second word (first word is @forgebot)
         if words.len() > 1 {
             match words[1] {
@@ -231,7 +268,7 @@ fn parse_action_from_comment(body: &str) -> String {
             }
         }
     }
-    
+
     // Default to plan if no explicit action found
     "plan".to_string()
 }
@@ -277,7 +314,10 @@ async fn handle_pr_opened(
     let issue_id = match extract_issue_id_from_branch(head_ref) {
         Some(id) => id,
         None => {
-            warn!("PR head branch '{}' does not match agent/issue-<id> pattern, ignoring", head_ref);
+            warn!(
+                "PR head branch '{}' does not match agent/issue-<id> pattern, ignoring",
+                head_ref
+            );
             // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
             return Ok(Response::builder()
                 .status(200)
@@ -289,26 +329,29 @@ async fn handle_pr_opened(
     info!("PR opened for issue {} on branch {}", issue_id, head_ref);
 
     // Look up session by (repo_full_name, issue_id)
-    let session = match get_session_by_issue(db, &payload.repository.full_name, issue_id as i64).await {
-        Ok(Some(session)) => session,
-        Ok(None) => {
-            warn!("No session found for {} issue {}, cannot link PR", 
-                payload.repository.full_name, issue_id);
-            // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
-            return Ok(Response::builder()
-                .status(200)
-                .body("OK - no session found".into())
-                .unwrap());
-        }
-        Err(e) => {
-            error!("Failed to get session: {}", e);
-            // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
-            return Ok(Response::builder()
-                .status(200)
-                .body("OK - database error".into())
-                .unwrap());
-        }
-    };
+    let session =
+        match get_session_by_issue(db, &payload.repository.full_name, issue_id as i64).await {
+            Ok(Some(session)) => session,
+            Ok(None) => {
+                warn!(
+                    "No session found for {} issue {}, cannot link PR",
+                    payload.repository.full_name, issue_id
+                );
+                // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
+                return Ok(Response::builder()
+                    .status(200)
+                    .body("OK - no session found".into())
+                    .unwrap());
+            }
+            Err(e) => {
+                error!("Failed to get session: {}", e);
+                // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
+                return Ok(Response::builder()
+                    .status(200)
+                    .body("OK - database error".into())
+                    .unwrap());
+            }
+        };
 
     // Update session row with PR ID
     let pr_id = payload.pull_request.number as i64;
@@ -342,7 +385,10 @@ async fn handle_pr_closed(
     let issue_id = match extract_issue_id_from_branch(head_ref) {
         Some(id) => id,
         None => {
-            info!("PR head branch '{}' does not match agent/issue-<id> pattern, ignoring", head_ref);
+            info!(
+                "PR head branch '{}' does not match agent/issue-<id> pattern, ignoring",
+                head_ref
+            );
             // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
             return Ok(Response::builder()
                 .status(200)
@@ -351,29 +397,35 @@ async fn handle_pr_closed(
         }
     };
 
-    info!("PR closed/merged for issue {} on branch {}", issue_id, head_ref);
+    info!(
+        "PR closed/merged for issue {} on branch {}",
+        issue_id, head_ref
+    );
 
     // Look up session by (repo_full_name, issue_id)
-    let session = match get_session_by_issue(db, &payload.repository.full_name, issue_id as i64).await {
-        Ok(Some(session)) => session,
-        Ok(None) => {
-            info!("No session found for {} issue {}, nothing to clean up", 
-                payload.repository.full_name, issue_id);
-            // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
-            return Ok(Response::builder()
-                .status(200)
-                .body("OK - no session".into())
-                .unwrap());
-        }
-        Err(e) => {
-            error!("Failed to get session: {}", e);
-            // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
-            return Ok(Response::builder()
-                .status(200)
-                .body("OK - database error".into())
-                .unwrap());
-        }
-    };
+    let session =
+        match get_session_by_issue(db, &payload.repository.full_name, issue_id as i64).await {
+            Ok(Some(session)) => session,
+            Ok(None) => {
+                info!(
+                    "No session found for {} issue {}, nothing to clean up",
+                    payload.repository.full_name, issue_id
+                );
+                // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
+                return Ok(Response::builder()
+                    .status(200)
+                    .body("OK - no session".into())
+                    .unwrap());
+            }
+            Err(e) => {
+                error!("Failed to get session: {}", e);
+                // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
+                return Ok(Response::builder()
+                    .status(200)
+                    .body("OK - database error".into())
+                    .unwrap());
+            }
+        };
 
     // Insert into pending_worktrees table
     if let Err(e) = add_pending_worktree(db, &session.id, &session.worktree_path).await {
@@ -383,15 +435,21 @@ async fn handle_pr_closed(
 
     // Get worktree path and remove it
     let worktree_path = worktree_path(&config.opencode, &payload.repository.full_name, issue_id);
-    
+
     // Spawn worktree removal in background
     let worktree_path_clone = worktree_path.clone();
     let session_id_clone = session.id.clone();
     tokio::spawn(async move {
         if let Err(e) = remove_worktree(&worktree_path_clone).await {
-            error!("Failed to remove worktree for session {}: {}", session_id_clone, e);
+            error!(
+                "Failed to remove worktree for session {}: {}",
+                session_id_clone, e
+            );
         } else {
-            info!("Successfully removed worktree for session {}", session_id_clone);
+            info!(
+                "Successfully removed worktree for session {}",
+                session_id_clone
+            );
         }
     });
 
@@ -406,11 +464,14 @@ async fn handle_pr_closed(
 fn extract_issue_id_from_branch(branch: &str) -> Option<u64> {
     // Handle both "agent/issue-42" and "refs/heads/agent/issue-42"
     let branch_clean = branch.trim_start_matches("refs/heads/");
-    
+
     if let Some(idx) = branch_clean.find("agent/issue-") {
         let after_prefix = &branch_clean[idx + "agent/issue-".len()..];
         // Parse the number until we hit a non-digit
-        let num_str: String = after_prefix.chars().take_while(|c| c.is_ascii_digit()).collect();
+        let num_str: String = after_prefix
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
         num_str.parse::<u64>().ok()
     } else {
         None
@@ -434,7 +495,10 @@ pub async fn handle_pull_request_review_comment(
 
     // 1. Ignore if author == bot username
     if payload.sender.login == config.forgejo.bot_username {
-        info!("Ignoring review comment from bot user '{}' (loop prevention)", config.forgejo.bot_username);
+        info!(
+            "Ignoring review comment from bot user '{}' (loop prevention)",
+            config.forgejo.bot_username
+        );
         // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
         return Ok(Response::builder()
             .status(200)
@@ -457,13 +521,18 @@ pub async fn handle_pull_request_review_comment(
     let session = match get_session_by_pr(db, pr_id).await {
         Ok(Some(session)) => session,
         Ok(None) => {
-            warn!("No session found for PR {}, posting hard-fail comment", pr_id);
+            warn!(
+                "No session found for PR {}, posting hard-fail comment",
+                pr_id
+            );
             let fail_msg = comment_text_no_context();
-            let _ = forgejo.post_pr_comment(
-                &payload.repository.full_name,
-                payload.pull_request.number,
-                &fail_msg,
-            ).await;
+            let _ = forgejo
+                .post_pr_comment(
+                    &payload.repository.full_name,
+                    payload.pull_request.number,
+                    &fail_msg,
+                )
+                .await;
             // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
             return Ok(Response::builder()
                 .status(200)
@@ -473,11 +542,13 @@ pub async fn handle_pull_request_review_comment(
         Err(e) => {
             error!("Failed to get session by PR: {}", e);
             let err_msg = comment_text_error(&format!("Failed to load session: {}", e));
-            let _ = forgejo.post_pr_comment(
-                &payload.repository.full_name,
-                payload.pull_request.number,
-                &err_msg,
-            ).await;
+            let _ = forgejo
+                .post_pr_comment(
+                    &payload.repository.full_name,
+                    payload.pull_request.number,
+                    &err_msg,
+                )
+                .await;
             // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
             return Ok(Response::builder()
                 .status(200)
@@ -488,13 +559,18 @@ pub async fn handle_pull_request_review_comment(
 
     // 4. Check if session is busy
     if session.state == "planning" || session.state == "building" || session.state == "revising" {
-        info!("Session {} is busy (state: {}), posting busy comment", session.id, session.state);
+        info!(
+            "Session {} is busy (state: {}), posting busy comment",
+            session.id, session.state
+        );
         let busy_msg = comment_text_busy();
-        let _ = forgejo.post_pr_comment(
-            &payload.repository.full_name,
-            payload.pull_request.number,
-            &busy_msg,
-        ).await;
+        let _ = forgejo
+            .post_pr_comment(
+                &payload.repository.full_name,
+                payload.pull_request.number,
+                &busy_msg,
+            )
+            .await;
         // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
         return Ok(Response::builder()
             .status(200)
@@ -504,11 +580,14 @@ pub async fn handle_pull_request_review_comment(
 
     // 5. Post acknowledgement comment on PR
     let ack_msg = "🤖 forgebot is addressing review comments...".to_string();
-    if let Err(e) = forgejo.post_pr_comment(
-        &payload.repository.full_name,
-        payload.pull_request.number,
-        &ack_msg,
-    ).await {
+    if let Err(e) = forgejo
+        .post_pr_comment(
+            &payload.repository.full_name,
+            payload.pull_request.number,
+            &ack_msg,
+        )
+        .await
+    {
         error!("Failed to post acknowledgement comment: {}", e);
     }
 
@@ -528,7 +607,10 @@ pub async fn handle_pull_request_review_comment(
 
     tokio::spawn(async move {
         if let Err(e) = dispatch_session(&db_clone, &forgejo_clone, &config_clone, trigger).await {
-            error!("dispatch_session failed for revision on PR {}: {}", pr_id, e);
+            error!(
+                "dispatch_session failed for revision on PR {}: {}",
+                pr_id, e
+            );
         }
     });
 
@@ -549,10 +631,7 @@ pub async fn handle_unknown_event(event_type: &str) -> Result<Response, axum::re
 
     // Return 200 OK - we don't want Forgejo to retry unknown events
     // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
-    Ok(Response::builder()
-        .status(200)
-        .body("OK".into())
-        .unwrap())
+    Ok(Response::builder().status(200).body("OK".into()).unwrap())
 }
 
 #[cfg(test)]
@@ -563,12 +642,18 @@ mod tests {
     fn test_parse_action_from_comment() {
         // Plan action
         assert_eq!(parse_action_from_comment("@forgebot plan"), "plan");
-        assert_eq!(parse_action_from_comment("Hey @forgebot plan this issue"), "plan");
+        assert_eq!(
+            parse_action_from_comment("Hey @forgebot plan this issue"),
+            "plan"
+        );
         assert_eq!(parse_action_from_comment("@FORGEBOT PLAN"), "plan"); // case insensitive
 
         // Build action
         assert_eq!(parse_action_from_comment("@forgebot build"), "build");
-        assert_eq!(parse_action_from_comment("Please @forgebot build this"), "build");
+        assert_eq!(
+            parse_action_from_comment("Please @forgebot build this"),
+            "build"
+        );
 
         // Unknown action defaults to plan
         assert_eq!(parse_action_from_comment("@forgebot something"), "plan");
@@ -584,7 +669,10 @@ mod tests {
         assert_eq!(extract_issue_id_from_branch("agent/issue-1"), Some(1));
 
         // With refs/heads/ prefix
-        assert_eq!(extract_issue_id_from_branch("refs/heads/agent/issue-42"), Some(42));
+        assert_eq!(
+            extract_issue_id_from_branch("refs/heads/agent/issue-42"),
+            Some(42)
+        );
 
         // No match
         assert_eq!(extract_issue_id_from_branch("feature/something"), None);
@@ -593,6 +681,9 @@ mod tests {
 
         // Edge cases
         assert_eq!(extract_issue_id_from_branch("agent/issue-"), None);
-        assert_eq!(extract_issue_id_from_branch("agent/issue-42-extra"), Some(42));
+        assert_eq!(
+            extract_issue_id_from_branch("agent/issue-42-extra"),
+            Some(42)
+        );
     }
 }
