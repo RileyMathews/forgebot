@@ -64,13 +64,21 @@ async fn main() -> Result<()> {
     info!("Database initialized successfully");
 
     // Initialize Forgejo client
-    let _forgejo_client = forgejo::ForgejoClient::new(
+    let forgejo_client = forgejo::ForgejoClient::new(
         &config.forgejo.url,
         &config.forgejo.token,
         &config.forgejo.bot_username,
     ).context("Failed to create Forgejo client")?;
 
     info!("Forgejo client initialized successfully");
+
+    // Run startup crash recovery before starting the server
+    session::opencode::startup_crash_recovery(&db_pool, &forgejo_client, &config)
+        .await
+        .context("Crash recovery failed (this is non-fatal, continuing startup)")
+        .ok(); // Don't fail startup if crash recovery fails
+
+    info!("Startup crash recovery complete");
 
     // Wrap config in Arc for sharing across handlers
     let config = Arc::new(config);

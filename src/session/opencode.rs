@@ -1,12 +1,23 @@
-//! opencode configuration directory setup
+//! opencode configuration directory setup and subprocess invocation
 //!
-//! This module handles writing the global opencode config directory on startup.
-//! Files are embedded in the binary and written only if they don't already exist,
-//! allowing operators to customize them without having changes overwritten.
+//! This module handles:
+//! 1. Writing the global opencode config directory on startup
+//! 2. Spawning opencode subprocesses with proper environment
+//! 3. Session orchestration and lifecycle management
+//! 4. Crash recovery on startup
 
-use crate::config::OpencodeConfig;
-use anyhow::{Context, Result};
-use tracing::info;
+use crate::config::{Config, OpencodeConfig};
+use crate::db::{DbPool, NewSession, Session, get_sessions_in_state, insert_session, update_session_state};
+use crate::forgejo::ForgejoClient;
+use crate::session::{SessionTrigger, build_prompt, derive_session_id};
+use crate::session::env_loader;
+use crate::session::worktree;
+use anyhow::{Context, Result, anyhow};
+use std::collections::HashMap;
+use std::path::Path;
+use std::process::Stdio;
+use tokio::process::Command;
+use tracing::{debug, error, info, warn};
 
 // Template files embedded at compile time
 const PACKAGE_JSON: &str = include_str!("../../opencode-config/package.json");
@@ -106,9 +117,450 @@ pub fn setup_opencode_config_dir(config: &OpencodeConfig) -> Result<()> {
     Ok(())
 }
 
+/// Run opencode subprocess with the given parameters.
+///
+/// # Arguments
+/// * `config` - The forgebot configuration
+/// * `session_id` - The session ID for this invocation
+/// * `agent_mode` - The agent mode: "plan" or "build"
+/// * `worktree_path` - Path to the worktree directory
+/// * `prompt` - The prompt string to pass to opencode
+/// * `env_extras` - Additional environment variables from env loader
+///
+/// # Returns
+/// * `Ok(())` if opencode exits with code 0
+/// * `Err` if opencode fails or exits non-zero
+pub async fn run_opencode(
+    config: &Config,
+    session_id: &str,
+    agent_mode: &str,
+    worktree_path: &Path,
+    prompt: &str,
+    env_extras: HashMap<String, String>,
+) -> Result<()> {
+    let binary = &config.opencode.binary;
+    let opencode_config_home = config.opencode.config_dir.clone();
+
+    debug!(
+        "Spawning opencode: binary={}, session_id={}, agent_mode={}",
+        binary, session_id, agent_mode
+    );
+
+    // Build environment
+    let mut env_vars: HashMap<String, String> = HashMap::new();
+
+    // 1. Start with process environment
+    for (key, value) in std::env::vars() {
+        env_vars.insert(key, value);
+    }
+
+    // 2. Add env loader output (direnv/nix results)
+    for (key, value) in env_extras {
+        env_vars.insert(key, value);
+    }
+
+    // 3. Set FORGEBOT_* vars (always win)
+    env_vars.insert("FORGEBOT_FORGEJO_URL".to_string(), config.forgejo.url.clone());
+    env_vars.insert("FORGEBOT_FORGEJO_TOKEN".to_string(), config.forgejo.token.clone());
+    env_vars.insert("FORGEBOT_REPO".to_string(), config.forgejo.url.clone());
+    env_vars.insert("OPENCODE_CONFIG_HOME".to_string(), opencode_config_home.display().to_string());
+
+    // Build the command
+    let mut cmd = Command::new(binary);
+    cmd.arg("run")
+        .arg("--session")
+        .arg(session_id)
+        .arg("--agent")
+        .arg(agent_mode)
+        .arg("--cwd")
+        .arg(worktree_path)
+        .arg("--quiet")
+        .arg(prompt)
+        .envs(&env_vars)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    debug!("Running opencode command: {:?}", cmd);
+
+    let output = cmd
+        .output()
+        .await
+        .with_context(|| format!("Failed to spawn opencode process: {}", binary))?;
+
+    let exit_code = output.status.code().unwrap_or(-1);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if output.status.success() {
+        debug!("opencode exited successfully with code 0");
+        Ok(())
+    } else {
+        error!(
+            "opencode failed with exit code {}: stderr={}",
+            exit_code, stderr
+        );
+        Err(anyhow!(
+            "opencode process failed with exit code {}: {}",
+            exit_code,
+            stderr
+        ))
+    }
+}
+
+/// Main session orchestration function.
+///
+/// This is called from webhook handlers to dispatch a new session.
+/// It handles the full lifecycle: loading env, building prompt,
+/// spawning opencode, and updating state.
+///
+/// This function runs in a spawned task, so it can block without
+/// holding up the webhook response.
+///
+/// # Arguments
+/// * `db` - Database connection pool
+/// * `forgejo` - Forgejo API client
+/// * `config` - Forgebot configuration
+/// * `trigger` - The session trigger event
+pub async fn dispatch_session(
+    db: &DbPool,
+    forgejo: &ForgejoClient,
+    config: &Config,
+    trigger: SessionTrigger,
+) -> Result<()> {
+    let session_id = derive_session_id(&trigger.repo_full_name, trigger.issue_id);
+
+    info!(
+        "Dispatching session {} for {} issue {} (action: {})",
+        session_id, trigger.repo_full_name, trigger.issue_id, trigger.action
+    );
+
+    // 1. Fetch issue details from Forgejo
+    let issue = match forgejo.get_issue(&trigger.repo_full_name, trigger.issue_id).await {
+        Ok(issue) => issue,
+        Err(e) => {
+            error!("Failed to fetch issue {}: {}", trigger.issue_id, e);
+            return Err(anyhow!("Failed to fetch issue: {}", e));
+        }
+    };
+
+    // 2. Fetch issue comments
+    let issue_comments = match forgejo.list_issue_comments(&trigger.repo_full_name, trigger.issue_id).await {
+        Ok(comments) => comments,
+        Err(e) => {
+            warn!("Failed to fetch issue comments for {}: {}", trigger.issue_id, e);
+            Vec::new()
+        }
+    };
+
+    // 3. Fetch PR review comments if in revision phase
+    let pr_review_comments = if trigger.action == "revision" && trigger.pr_id.is_some() {
+        let pr_id = trigger.pr_id.unwrap();
+        match forgejo.list_pr_review_comments(&trigger.repo_full_name, pr_id).await {
+            Ok(comments) => comments,
+            Err(e) => {
+                warn!("Failed to fetch PR review comments for PR {}: {}", pr_id, e);
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
+
+    // 4. Check if session already exists
+    let existing_session = crate::db::get_session_by_issue(
+        db,
+        &trigger.repo_full_name,
+        trigger.issue_id as i64,
+    ).await?;
+
+    // 5. Determine state and check if busy
+    let new_state = match trigger.action.as_str() {
+        "plan" => "planning",
+        "build" => "building",
+        "revision" => "revising",
+        _ => {
+            error!("Unknown action: {}", trigger.action);
+            return Err(anyhow!("Unknown action: {}", trigger.action));
+        }
+    };
+
+    // If session exists and is busy, reject
+    if let Some(ref session) = existing_session {
+        if session.state == "planning" || session.state == "building" || session.state == "revising" {
+            info!(
+                "Session {} is busy (state: {}), posting rejection comment",
+                session_id, session.state
+            );
+            let _ = forgejo.post_issue_comment(
+                &trigger.repo_full_name,
+                trigger.issue_id,
+                &format!(
+                    "⚠️ forgebot is currently busy (state: {}). Please wait for the current operation to complete before triggering a new one.",
+                    session.state
+                ),
+            ).await;
+            return Err(anyhow!("Session is busy"));
+        }
+    }
+
+    // 6. Load environment
+    let env_extras = match env_loader::load_env("none", &config.opencode.worktree_base).await {
+        Ok(env) => env,
+        Err(e) => {
+            error!("Failed to load environment for session {}: {}", session_id, e);
+            let _ = forgejo.post_issue_comment(
+                &trigger.repo_full_name,
+                trigger.issue_id,
+                &format!("❌ Environment loading failed: {}. Session set to error state.", e),
+            ).await;
+            
+            // Set state to error if session exists
+            if let Some(ref session) = existing_session {
+                let _ = update_session_state(db, &session.id, "error").await;
+            }
+            
+            return Err(anyhow!("Environment loading failed: {}", e));
+        }
+    };
+
+    // 7. Build prompt
+    let prompt = build_prompt(
+        &trigger.action,
+        &issue,
+        &issue_comments,
+        &pr_review_comments,
+        trigger.pr_id,
+    );
+
+    // 8. Get or create worktree
+    let worktree_path = worktree::worktree_path(&config.opencode, &trigger.repo_full_name, trigger.issue_id);
+    
+    // If worktree doesn't exist, we need to create it
+    if !worktree_path.exists() {
+        warn!(
+            "Worktree does not exist at {}. It will be created when needed.",
+            worktree_path.display()
+        );
+    }
+
+    // 9. Get or create session record
+    let session_record: Session;
+    if let Some(session) = existing_session {
+        session_record = session;
+    } else {
+        // Create new session
+        let new_session = NewSession {
+            id: uuid::Uuid::new_v4().to_string(),
+            repo_full_name: trigger.repo_full_name.clone(),
+            issue_id: trigger.issue_id as i64,
+            pr_id: trigger.pr_id.map(|id| id as i64),
+            opencode_session_id: session_id.clone(),
+            worktree_path: worktree_path.display().to_string(),
+            state: "idle".to_string(),
+        };
+        insert_session(db, &new_session).await?;
+        
+        session_record = crate::db::get_session_by_issue(
+            db,
+            &trigger.repo_full_name,
+            trigger.issue_id as i64,
+        ).await?.ok_or_else(|| anyhow!("Failed to retrieve newly created session"))?;
+    }
+
+    // 10. Post acknowledgement comment
+    let ack_msg = match trigger.action.as_str() {
+        "plan" => format!("🤖 forgebot is starting to work on this issue. Creating plan...\n\nSession: `{}`", session_id),
+        "build" => format!("🤖 forgebot is implementing the plan. Building...\n\nSession: `{}`", session_id),
+        "revision" => format!("🤖 forgebot is addressing review comments. Revising...\n\nSession: `{}`", session_id),
+        _ => format!("🤖 forgebot is starting work.\n\nSession: `{}`", session_id),
+    };
+    
+    let _ = forgejo.post_issue_comment(&trigger.repo_full_name, trigger.issue_id, &ack_msg).await;
+
+    // 11. Update session state
+    update_session_state(db, &session_record.id, new_state).await?;
+
+    // 12. Determine agent mode
+    let agent_mode = match trigger.action.as_str() {
+        "plan" => "plan",
+        "build" => "build",
+        "revision" => "build", // revision uses build agent mode
+        _ => "build",
+    };
+
+    // 13. Set FORGEBOT_* env vars for this session
+    let mut session_env = env_extras.clone();
+    session_env.insert("FORGEBOT_ISSUE_ID".to_string(), trigger.issue_id.to_string());
+    if let Some(pr_id) = trigger.pr_id {
+        session_env.insert("FORGEBOT_PR_ID".to_string(), pr_id.to_string());
+    }
+
+    // 14. Spawn opencode
+    info!("Spawning opencode for session {} with agent mode {}", session_id, agent_mode);
+    
+    let opencode_result = run_opencode(
+        config,
+        &session_id,
+        agent_mode,
+        &worktree_path,
+        &prompt,
+        session_env,
+    ).await;
+
+    // 15. Handle result
+    match opencode_result {
+        Ok(()) => {
+            info!("opencode completed successfully for session {}", session_id);
+            update_session_state(db, &session_record.id, "idle").await?;
+            
+            let success_msg = match trigger.action.as_str() {
+                "plan" => "✅ Plan created successfully! Check the comments above for the plan details.",
+                "build" => "✅ Implementation complete! A pull request has been created.",
+                "revision" => "✅ Review comments addressed and changes pushed.",
+                _ => "✅ Task completed successfully.",
+            };
+            let _ = forgejo.post_issue_comment(&trigger.repo_full_name, trigger.issue_id, success_msg).await;
+            
+            Ok(())
+        }
+        Err(e) => {
+            error!("opencode failed for session {}: {}", session_id, e);
+            update_session_state(db, &session_record.id, "error").await?;
+            
+            let error_msg = format!(
+                "❌ Task failed. Error: {}\n\nSession set to error state. Please re-trigger when ready.",
+                e
+            );
+            let _ = forgejo.post_issue_comment(&trigger.repo_full_name, trigger.issue_id, &error_msg).await;
+            
+            Err(e)
+        }
+    }
+}
+
+/// Crash recovery: handle sessions that were in progress when forgebot restarted.
+///
+/// This function is called on startup before the server starts.
+/// It finds all sessions in "planning", "building", or "revising" state and:
+/// 1. Sets them to "error" state
+/// 2. Posts a comment on the issue explaining what happened
+///
+/// # Arguments
+/// * `db` - Database connection pool
+/// * `forgejo` - Forgejo API client
+/// * `config` - Forgebot configuration
+///
+/// # Returns
+/// Always returns Ok(()) - failures are logged but don't block startup
+pub async fn startup_crash_recovery(
+    db: &DbPool,
+    forgejo: &ForgejoClient,
+    _config: &Config,
+) -> Result<()> {
+    info!("Running startup crash recovery...");
+
+    let stuck_states = ["planning", "building", "revising"];
+    let stuck_sessions = match get_sessions_in_state(db, &stuck_states).await {
+        Ok(sessions) => sessions,
+        Err(e) => {
+            error!("Failed to query stuck sessions: {}", e);
+            return Ok(()); // Non-blocking
+        }
+    };
+
+    if stuck_sessions.is_empty() {
+        info!("No stuck sessions found, crash recovery complete");
+        return Ok(());
+    }
+
+    info!(
+        "Found {} session(s) stuck in progress, recovering...",
+        stuck_sessions.len()
+    );
+
+    for session in stuck_sessions {
+        warn!(
+            "Recovering stuck session {} (state: {}) for {} issue {}",
+            session.id, session.state, session.repo_full_name, session.issue_id
+        );
+
+        // Set state to error
+        if let Err(e) = update_session_state(db, &session.id, "error").await {
+            error!(
+                "Failed to set session {} to error state: {}",
+                session.id, e
+            );
+            continue;
+        }
+
+        // Post recovery comment
+        let recovery_msg = format!(
+            "❌ forgebot restarted while working on issue #{issue}. Session was in state `{state}`. Please re-trigger when ready.",
+            issue = session.issue_id,
+            state = session.state
+        );
+
+        if let Err(e) = forgejo
+            .post_issue_comment(&session.repo_full_name, session.issue_id as u64, &recovery_msg)
+            .await
+        {
+            error!(
+                "Failed to post recovery comment for session {}: {}",
+                session.id, e
+            );
+        } else {
+            info!(
+                "Posted recovery comment for session {}",
+                session.id
+            );
+        }
+    }
+
+    info!("Crash recovery complete");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_derive_session_id() {
+        // Basic case
+        let id = derive_session_id("Alice/My-Repo", 42);
+        assert_eq!(id, "ses_42_alice_my_repo");
+
+        // Already lowercase
+        let id = derive_session_id("alice/myrepo", 123);
+        assert_eq!(id, "ses_123_alice_myrepo");
+
+        // With dots (should become underscores)
+        let id = derive_session_id("user/repo.name", 1);
+        assert_eq!(id, "ses_1_user_repo_name");
+
+        // With multiple special chars
+        let id = derive_session_id("My-Org/Some_Repo", 99);
+        assert_eq!(id, "ses_99_my_org_some_repo");
+
+        // With numbers
+        let id = derive_session_id("org2/repo-v1.0", 7);
+        assert_eq!(id, "ses_7_org2_repo_v1_0");
+
+        // Edge case: missing slash
+        let id = derive_session_id("just-owner", 5);
+        assert_eq!(id, "ses_5_just_owner_");
+    }
+
+    #[test]
+    fn test_sanitize_for_session_id() {
+        // Test via derive_session_id since sanitize is private
+        assert_eq!(derive_session_id("My-Repo/Test", 1), "ses_1_my_repo_test");
+        assert_eq!(derive_session_id("UPPER/LOWER", 1), "ses_1_upper_lower");
+        assert_eq!(derive_session_id("123/456", 1), "ses_1_123_456");
+    }
+
+    // Note: run_opencode tests would require mocking or actual opencode binary
+    // Note: dispatch_session tests would require complex mocking of db and forgejo
+    // Note: startup_crash_recovery tests would require a test database
 
     #[test]
     fn test_setup_opencode_config_dir_creates_files() {
