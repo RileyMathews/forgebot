@@ -195,6 +195,7 @@ pub async fn run_opencode(params: RunOpencodeParams<'_>) -> Result<Option<String
                 | "TMPDIR"
                 | "TMP"
                 | "TEMP"
+                | "NIX_ENFORCE_PURITY"
                 | "OPENCODE_CONFIG_DIR"
         ) {
             blocked_runtime_overrides.push(format!("{}={}", key, value));
