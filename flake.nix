@@ -10,6 +10,10 @@
     flake-utils = {
       url = "github:numtide/flake-utils";
     };
+    opencode = {
+      url = "github:anomalyco/opencode?ref=v1.2.23";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -18,6 +22,7 @@
       nixpkgs,
       naersk,
       flake-utils,
+      opencode,
       ...
     }:
     let

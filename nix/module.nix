@@ -39,9 +39,9 @@ in
 
     opencodePackage = lib.mkOption {
       type = lib.types.nullOr lib.types.package;
-      default = pkgs.opencode or null;
-      defaultText = lib.literalExpression "pkgs.opencode or null";
-      description = "The opencode package to make available in the service PATH. If null, opencode must be available in the system PATH or configured with an absolute path in forgebot.toml.";
+      default = self.inputs.opencode.packages.${pkgs.stdenv.hostPlatform.system}.opencode or null;
+      defaultText = lib.literalExpression "self.inputs.opencode.packages.\${pkgs.stdenv.hostPlatform.system}.opencode or null";
+      description = "The opencode package to make available in the service PATH. Defaults to the opencode flake bundled with forgebot. If null, opencode must be available in the system PATH or configured with an absolute path in forgebot.toml.";
     };
 
     secretsFilePath = lib.mkOption {

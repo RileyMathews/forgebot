@@ -77,11 +77,33 @@
         "type": "github"
       }
     },
+    "opencode": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1773064243,
+        "narHash": "sha256-oIXELxYLk1ofGnQfEArvmZ07fVSbEaHhabZod0B/vB0=",
+        "owner": "anomalyco",
+        "repo": "opencode",
+        "rev": "2712244ad3bb6e4bba20952f46a3493e0573dee2",
+        "type": "github"
+      },
+      "original": {
+        "owner": "anomalyco",
+        "ref": "v1.2.23",
+        "repo": "opencode",
+        "type": "github"
+      }
+    },
     "root": {
       "inputs": {
         "flake-utils": "flake-utils",
         "naersk": "naersk",
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": "nixpkgs",
+        "opencode": "opencode"
       }
     },
     "rust-analyzer-src": {

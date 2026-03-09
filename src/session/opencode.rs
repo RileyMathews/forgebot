@@ -183,9 +183,8 @@ pub async fn run_opencode(
         .arg(session_id)
         .arg("--agent")
         .arg(agent_mode)
-        .arg("--dir")
-        .arg(worktree_path)
         .arg(prompt)
+        .current_dir(worktree_path)
         .envs(&env_vars)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
