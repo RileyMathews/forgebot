@@ -6,14 +6,15 @@ use crate::config::OpencodeConfig;
 
 /// Compute the path for a worktree directory.
 ///
-/// Returns: `<worktree_base>/<owner>_<repo>/<issue_id>/`
-/// Example: `worktree_path(config, "alice/myrepo", 42)` → `/var/lib/forgebot/worktrees/alice_myrepo/42/`
+/// Returns: `<worktree_base>/_worktrees/<owner>_<repo>/<issue_id>/`
+/// Example: `worktree_path(config, "alice/myrepo", 42)` → `/var/lib/forgebot/worktrees/_worktrees/alice_myrepo/42/`
 pub fn worktree_path(config: &OpencodeConfig, repo_full_name: &str, issue_id: u64) -> PathBuf {
     let (owner, repo) = parse_repo_full_name(repo_full_name);
     let repo_dir = format!("{}_{}", owner, repo);
 
     config
         .worktree_base
+        .join("_worktrees")
         .join(repo_dir)
         .join(issue_id.to_string())
 }
@@ -224,28 +225,28 @@ mod tests {
         let path = worktree_path(&config, "alice/myrepo", 42);
         assert_eq!(
             path,
-            PathBuf::from("/var/lib/forgebot/worktrees/alice_myrepo/42")
+            PathBuf::from("/var/lib/forgebot/worktrees/_worktrees/alice_myrepo/42")
         );
 
         // Test with different issue ID
         let path = worktree_path(&config, "alice/myrepo", 123);
         assert_eq!(
             path,
-            PathBuf::from("/var/lib/forgebot/worktrees/alice_myrepo/123")
+            PathBuf::from("/var/lib/forgebot/worktrees/_worktrees/alice_myrepo/123")
         );
 
         // Test with different owner/repo
         let path = worktree_path(&config, "bob/another-repo", 1);
         assert_eq!(
             path,
-            PathBuf::from("/var/lib/forgebot/worktrees/bob_another-repo/1")
+            PathBuf::from("/var/lib/forgebot/worktrees/_worktrees/bob_another-repo/1")
         );
 
         // Test case insensitivity
         let path = worktree_path(&config, "ALICE/MYREPO", 42);
         assert_eq!(
             path,
-            PathBuf::from("/var/lib/forgebot/worktrees/alice_myrepo/42")
+            PathBuf::from("/var/lib/forgebot/worktrees/_worktrees/alice_myrepo/42")
         );
     }
 

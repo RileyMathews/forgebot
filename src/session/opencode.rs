@@ -591,16 +591,40 @@ Error output: {}",
         trigger.pr_id,
     );
 
-    // 8. Get or create worktree
+    // 8. Look up repository metadata and get/create worktree
+    let repo_record = crate::db::get_repo_by_full_name(db, &trigger.repo_full_name)
+        .await?
+        .ok_or_else(|| {
+            anyhow!(
+                "Repository {} not found in database",
+                trigger.repo_full_name
+            )
+        })?;
+
     let worktree_path =
         worktree::worktree_path(&config.opencode, &trigger.repo_full_name, trigger.issue_id);
 
-    // If worktree doesn't exist, we need to create it
+    // If worktree doesn't exist, create it from the bare clone.
     if !worktree_path.exists() {
-        warn!(
-            "Worktree does not exist at {}. It will be created when needed.",
-            worktree_path.display()
+        info!(
+            repo = %trigger.repo_full_name,
+            issue_id = %trigger.issue_id,
+            path = %worktree_path.display(),
+            "Creating worktree"
         );
+        worktree::create_worktree(
+            &config.opencode,
+            &trigger.repo_full_name,
+            trigger.issue_id,
+            &repo_record.default_branch,
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "failed to create worktree for {} issue {}",
+                trigger.repo_full_name, trigger.issue_id
+            )
+        })?;
     }
 
     // 9. Get or create session record
