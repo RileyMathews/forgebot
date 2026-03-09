@@ -17,6 +17,10 @@ pub struct Repo {
     pub full_name: String,
     pub default_branch: String,
     pub env_loader: String,
+    pub clone_status: String,
+    pub clone_error: Option<String>,
+    pub clone_attempts: i64,
+    pub last_clone_attempt_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -61,13 +65,14 @@ pub async fn init_db(config: &DatabaseConfig) -> Result<DbPool> {
 
     // Ensure parent directory exists
     if let Some(parent) = db_path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .with_context(|| format!("Failed to create database directory: {}", parent.display()))?;
+        tokio::fs::create_dir_all(parent).await.with_context(|| {
+            format!("Failed to create database directory: {}", parent.display())
+        })?;
     }
 
     // Build connection options with create_if_missing
-    let db_path_str = db_path.to_str()
+    let db_path_str = db_path
+        .to_str()
         .context("Invalid database path (not UTF-8)")?;
     let connect_options = SqliteConnectOptions::new()
         .filename(db_path_str)
@@ -88,7 +93,10 @@ pub async fn init_db(config: &DatabaseConfig) -> Result<DbPool> {
         .await
         .context("Failed to run database migrations")?;
 
-    info!("Database initialized successfully at: {}", db_path.display());
+    info!(
+        "Database initialized successfully at: {}",
+        db_path.display()
+    );
     Ok(pool)
 }
 
@@ -96,12 +104,13 @@ pub async fn init_db(config: &DatabaseConfig) -> Result<DbPool> {
 pub async fn init_db_at_path(db_path: &Path) -> Result<DbPool> {
     // Ensure parent directory exists
     if let Some(parent) = db_path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .with_context(|| format!("Failed to create database directory: {}", parent.display()))?;
+        tokio::fs::create_dir_all(parent).await.with_context(|| {
+            format!("Failed to create database directory: {}", parent.display())
+        })?;
     }
 
-    let db_path_str = db_path.to_str()
+    let db_path_str = db_path
+        .to_str()
         .context("Invalid database path (not UTF-8)")?;
     let connect_options = SqliteConnectOptions::new()
         .filename(db_path_str)
@@ -119,7 +128,10 @@ pub async fn init_db_at_path(db_path: &Path) -> Result<DbPool> {
         .await
         .context("Failed to run database migrations")?;
 
-    info!("Database initialized successfully at: {}", db_path.display());
+    info!(
+        "Database initialized successfully at: {}",
+        db_path.display()
+    );
     Ok(pool)
 }
 
@@ -157,7 +169,8 @@ pub async fn insert_repo(
 pub async fn get_repo_by_full_name(pool: &DbPool, full_name: &str) -> Result<Option<Repo>> {
     let row = sqlx::query(
         r#"
-        SELECT id, full_name, default_branch, env_loader, created_at, updated_at
+        SELECT id, full_name, default_branch, env_loader, clone_status, clone_error,
+               clone_attempts, last_clone_attempt_at, created_at, updated_at
         FROM repos
         WHERE full_name = ?1
         "#,
@@ -173,6 +186,10 @@ pub async fn get_repo_by_full_name(pool: &DbPool, full_name: &str) -> Result<Opt
             full_name: row.get("full_name"),
             default_branch: row.get("default_branch"),
             env_loader: row.get("env_loader"),
+            clone_status: row.get("clone_status"),
+            clone_error: row.get("clone_error"),
+            clone_attempts: row.get("clone_attempts"),
+            last_clone_attempt_at: row.get("last_clone_attempt_at"),
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
         })),
@@ -184,7 +201,8 @@ pub async fn get_repo_by_full_name(pool: &DbPool, full_name: &str) -> Result<Opt
 pub async fn list_repos(pool: &DbPool) -> Result<Vec<Repo>> {
     let rows = sqlx::query(
         r#"
-        SELECT id, full_name, default_branch, env_loader, created_at, updated_at
+        SELECT id, full_name, default_branch, env_loader, clone_status, clone_error,
+               clone_attempts, last_clone_attempt_at, created_at, updated_at
         FROM repos
         ORDER BY full_name
         "#,
@@ -200,12 +218,118 @@ pub async fn list_repos(pool: &DbPool) -> Result<Vec<Repo>> {
             full_name: row.get("full_name"),
             default_branch: row.get("default_branch"),
             env_loader: row.get("env_loader"),
+            clone_status: row.get("clone_status"),
+            clone_error: row.get("clone_error"),
+            clone_attempts: row.get("clone_attempts"),
+            last_clone_attempt_at: row.get("last_clone_attempt_at"),
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
         })
         .collect();
 
     Ok(repos)
+}
+
+/// Validate a repository full name format.
+///
+/// Valid format: owner/repo where both owner and repo contain only
+/// alphanumeric characters, hyphens, and underscores, with exactly one '/'.
+///
+/// Returns Ok(()) if valid, Err with message if invalid.
+pub fn validate_repo_full_name(full_name: &str) -> Result<()> {
+    // Check for exactly one slash
+    let slash_count = full_name.chars().filter(|&c| c == '/').count();
+    if slash_count != 1 {
+        anyhow::bail!(
+            "Invalid repository name '{}' - must contain exactly one '/'",
+            full_name
+        );
+    }
+
+    // Check each part against allowed character set
+    for part in full_name.split('/') {
+        if part.is_empty() {
+            anyhow::bail!(
+                "Invalid repository name '{}' - empty owner or repository name",
+                full_name
+            );
+        }
+
+        if !part
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            anyhow::bail!(
+                "Invalid repository name '{}' - parts must contain only alphanumeric, hyphens, and underscores",
+                full_name
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// Atomically reset clone status to 'pending' if currently 'failed'.
+///
+/// Uses a single UPDATE query with WHERE clause for atomicity.
+/// Only the first concurrent UPDATE will match 'clone_status = failed',
+/// subsequent ones will see 'pending' and return false.
+///
+/// Returns `true` if the update succeeded (row was updated), `false` if no
+/// rows matched (meaning status changed or another retry is in progress).
+pub async fn reset_clone_status_if_failed(pool: &DbPool, full_name: &str) -> Result<bool> {
+    // Execute UPDATE with WHERE clause for atomicity.
+    // SQLite handles concurrent calls safely - only first UPDATE matches.
+    let result = sqlx::query(
+        r#"
+        UPDATE repos 
+        SET clone_status = 'pending', 
+            clone_error = NULL,
+            clone_attempts = clone_attempts + 1, 
+            last_clone_attempt_at = datetime('now'),
+            updated_at = datetime('now')
+        WHERE full_name = ?1 AND clone_status = 'failed'
+        "#,
+    )
+    .bind(full_name)
+    .execute(pool)
+    .await
+    .context("failed to reset clone status")?;
+
+    Ok(result.rows_affected() > 0)
+}
+
+/// Update a repository's clone status
+pub async fn update_repo_clone_status(
+    pool: &DbPool,
+    full_name: &str,
+    status: &str,
+    error: Option<&str>,
+) -> Result<()> {
+    let result = sqlx::query(
+        r#"
+        UPDATE repos
+        SET clone_status = ?1,
+            clone_error = ?2,
+            clone_attempts = clone_attempts + 1,
+            last_clone_attempt_at = datetime('now'),
+            updated_at = datetime('now')
+        WHERE full_name = ?3
+        "#,
+    )
+    .bind(status)
+    .bind(error)
+    .bind(full_name)
+    .execute(pool)
+    .await
+    .with_context(|| format!("Failed to update repo clone status: {}", full_name))?;
+
+    if result.rows_affected() == 0 {
+        anyhow::bail!("Repo not found: {}", full_name);
+    }
+
+    debug!("Updated repo clone status: {} -> {}", full_name, status);
+    Ok(())
 }
 
 /// Update a repository's env_loader setting
@@ -258,8 +382,10 @@ pub async fn insert_session(pool: &DbPool, session: &NewSession) -> Result<()> {
     .await
     .with_context(|| format!("Failed to insert session: {}", session.id))?;
 
-    debug!("Inserted session: {} for repo {} issue {}",
-        session.id, session.repo_full_name, session.issue_id);
+    debug!(
+        "Inserted session: {} for repo {} issue {}",
+        session.id, session.repo_full_name, session.issue_id
+    );
     Ok(())
 }
 
@@ -405,7 +531,10 @@ pub async fn get_sessions_in_state(pool: &DbPool, states: &[&str]) -> Result<Vec
         query = query.bind(state);
     }
 
-    let rows = query.fetch_all(pool).await.context("Failed to get sessions by state")?;
+    let rows = query
+        .fetch_all(pool)
+        .await
+        .context("Failed to get sessions by state")?;
 
     let sessions = rows
         .into_iter()
@@ -430,7 +559,11 @@ pub async fn get_sessions_in_state(pool: &DbPool, states: &[&str]) -> Result<Vec
 // ============================================================================
 
 /// Add a worktree to the pending cleanup queue
-pub async fn add_pending_worktree(pool: &DbPool, session_id: &str, worktree_path: &str) -> Result<()> {
+pub async fn add_pending_worktree(
+    pool: &DbPool,
+    session_id: &str,
+    worktree_path: &str,
+) -> Result<()> {
     sqlx::query(
         r#"
         INSERT INTO pending_worktrees (session_id, worktree_path)
@@ -443,7 +576,10 @@ pub async fn add_pending_worktree(pool: &DbPool, session_id: &str, worktree_path
     .await
     .with_context(|| format!("Failed to add pending worktree: {}", worktree_path))?;
 
-    debug!("Added pending worktree: {} for session {}", worktree_path, session_id);
+    debug!(
+        "Added pending worktree: {} for session {}",
+        worktree_path, session_id
+    );
     Ok(())
 }
 
@@ -483,7 +619,12 @@ pub async fn remove_pending_worktree(pool: &DbPool, session_id: &str) -> Result<
     .bind(session_id)
     .execute(pool)
     .await
-    .with_context(|| format!("Failed to remove pending worktree for session: {}", session_id))?;
+    .with_context(|| {
+        format!(
+            "Failed to remove pending worktree for session: {}",
+            session_id
+        )
+    })?;
 
     if result.rows_affected() > 0 {
         debug!("Removed pending worktree for session: {}", session_id);

@@ -25,10 +25,26 @@
                     <td><strong>{{ repo.full_name }}</strong></td>
                     <td>{{ repo.default_branch }}</td>
                     <td>
-                        {% if repo.clone_present %}
-                            <span class="status-badge status-ok">Present</span>
+                        {% if repo.clone_status == "pending" %}
+                            <span class="badge badge-pending" title="Waiting for clone to start">⏳ Pending</span>
                         {% else %}
-                            <span class="status-badge status-error">Missing</span>
+                            {% if repo.clone_status == "cloning" %}
+                                <span class="badge badge-cloning" title="Clone is in progress">🔄 Cloning</span>
+                            {% else %}
+                                {% if repo.clone_status == "ready" %}
+                                    <span class="badge badge-success" title="Clone complete">✓ Ready</span>
+                                {% else %}
+                                    {% if repo.clone_status == "failed" %}
+                                        {% if repo.clone_error.is_some() %}
+                                            <span class="badge badge-error" title="{{ repo.clone_error.as_ref().unwrap() }}">✗ Failed</span>
+                                        {% else %}
+                                            <span class="badge badge-error" title="Unknown error">✗ Failed</span>
+                                        {% endif %}
+                                    {% else %}
+                                        <span class="badge">Unknown</span>
+                                    {% endif %}
+                                {% endif %}
+                            {% endif %}
                         {% endif %}
                     </td>
                     <td>

@@ -61,7 +61,9 @@ impl ForgejoClient {
             .header("Authorization", self.auth_header())
             .send()
             .await
-            .with_context(|| format!("Failed to send request to get issue {}/{}", repo, issue_id))?;
+            .with_context(|| {
+                format!("Failed to send request to get issue {}/{}", repo, issue_id)
+            })?;
 
         let status = response.status();
         if !status.is_success() {
@@ -86,8 +88,15 @@ impl ForgejoClient {
     }
 
     /// List comments on an issue
-    pub async fn list_issue_comments(&self, repo: &str, issue_id: u64) -> Result<Vec<IssueComment>> {
-        let url = self.api_url(&format!("/api/v1/repos/{}/issues/{}/comments", repo, issue_id));
+    pub async fn list_issue_comments(
+        &self,
+        repo: &str,
+        issue_id: u64,
+    ) -> Result<Vec<IssueComment>> {
+        let url = self.api_url(&format!(
+            "/api/v1/repos/{}/issues/{}/comments",
+            repo, issue_id
+        ));
         debug!("Fetching issue comments from: {}", url);
 
         let response = self
@@ -96,7 +105,12 @@ impl ForgejoClient {
             .header("Authorization", self.auth_header())
             .send()
             .await
-            .with_context(|| format!("Failed to send request to list issue comments {}/{}", repo, issue_id))?;
+            .with_context(|| {
+                format!(
+                    "Failed to send request to list issue comments {}/{}",
+                    repo, issue_id
+                )
+            })?;
 
         let status = response.status();
         if !status.is_success() {
@@ -112,16 +126,22 @@ impl ForgejoClient {
             );
         }
 
-        let comments: Vec<IssueComment> = response
-            .json()
-            .await
-            .with_context(|| format!("Failed to parse issue comments response for {}/{}", repo, issue_id))?;
+        let comments: Vec<IssueComment> = response.json().await.with_context(|| {
+            format!(
+                "Failed to parse issue comments response for {}/{}",
+                repo, issue_id
+            )
+        })?;
 
         Ok(comments)
     }
 
     /// List review comments on a pull request
-    pub async fn list_pr_review_comments(&self, repo: &str, pr_id: u64) -> Result<Vec<PullRequestReviewComment>> {
+    pub async fn list_pr_review_comments(
+        &self,
+        repo: &str,
+        pr_id: u64,
+    ) -> Result<Vec<PullRequestReviewComment>> {
         let url = self.api_url(&format!("/api/v1/repos/{}/pulls/{}/comments", repo, pr_id));
         debug!("Fetching PR review comments from: {}", url);
 
@@ -131,7 +151,12 @@ impl ForgejoClient {
             .header("Authorization", self.auth_header())
             .send()
             .await
-            .with_context(|| format!("Failed to send request to list PR review comments {}/{}", repo, pr_id))?;
+            .with_context(|| {
+                format!(
+                    "Failed to send request to list PR review comments {}/{}",
+                    repo, pr_id
+                )
+            })?;
 
         let status = response.status();
         if !status.is_success() {
@@ -147,17 +172,27 @@ impl ForgejoClient {
             );
         }
 
-        let comments: Vec<PullRequestReviewComment> = response
-            .json()
-            .await
-            .with_context(|| format!("Failed to parse PR review comments response for {}/{}", repo, pr_id))?;
+        let comments: Vec<PullRequestReviewComment> = response.json().await.with_context(|| {
+            format!(
+                "Failed to parse PR review comments response for {}/{}",
+                repo, pr_id
+            )
+        })?;
 
         Ok(comments)
     }
 
     /// Post a comment on an issue
-    pub async fn post_issue_comment(&self, repo: &str, issue_id: u64, body: &str) -> Result<IssueComment> {
-        let url = self.api_url(&format!("/api/v1/repos/{}/issues/{}/comments", repo, issue_id));
+    pub async fn post_issue_comment(
+        &self,
+        repo: &str,
+        issue_id: u64,
+        body: &str,
+    ) -> Result<IssueComment> {
+        let url = self.api_url(&format!(
+            "/api/v1/repos/{}/issues/{}/comments",
+            repo, issue_id
+        ));
         debug!("Posting issue comment to: {}", url);
 
         let payload = CommentPayload {
@@ -171,7 +206,12 @@ impl ForgejoClient {
             .json(&payload)
             .send()
             .await
-            .with_context(|| format!("Failed to send request to post issue comment {}/{}", repo, issue_id))?;
+            .with_context(|| {
+                format!(
+                    "Failed to send request to post issue comment {}/{}",
+                    repo, issue_id
+                )
+            })?;
 
         let status = response.status();
         if !status.is_success() {
@@ -187,16 +227,23 @@ impl ForgejoClient {
             );
         }
 
-        let comment: IssueComment = response
-            .json()
-            .await
-            .with_context(|| format!("Failed to parse issue comment response for {}/{}", repo, issue_id))?;
+        let comment: IssueComment = response.json().await.with_context(|| {
+            format!(
+                "Failed to parse issue comment response for {}/{}",
+                repo, issue_id
+            )
+        })?;
 
         Ok(comment)
     }
 
     /// Post a comment on a pull request (uses same endpoint as issue comments)
-    pub async fn post_pr_comment(&self, repo: &str, pr_id: u64, body: &str) -> Result<IssueComment> {
+    pub async fn post_pr_comment(
+        &self,
+        repo: &str,
+        pr_id: u64,
+        body: &str,
+    ) -> Result<IssueComment> {
         // PR comments use the same endpoint as issue comments in Forgejo
         self.post_issue_comment(repo, pr_id, body).await
     }
@@ -237,7 +284,12 @@ impl ForgejoClient {
     }
 
     /// Create a webhook for a repository
-    pub async fn create_repo_webhook(&self, repo: &str, url: &str, secret: &str) -> Result<Webhook> {
+    pub async fn create_repo_webhook(
+        &self,
+        repo: &str,
+        url: &str,
+        secret: &str,
+    ) -> Result<Webhook> {
         let api_url = self.api_url(&format!("/api/v1/repos/{}/hooks", repo));
         debug!("Creating webhook at: {}", api_url);
 

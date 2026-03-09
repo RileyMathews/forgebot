@@ -1,0 +1,19 @@
+version: "1.0"
+
+processes:
+  build:
+    description: Build the forgebot application
+    command: "cargo build"
+    environment:
+      - "SQLX_OFFLINE=true"
+    availability:
+      restart: "exit_on_failure"
+
+  run:
+    description: Run the forgebot application
+    command: "cargo run"
+    depends_on:
+      build:
+        condition: process_completed_successfully
+    availability:
+      restart: on_failure

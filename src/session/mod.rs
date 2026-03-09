@@ -1,3 +1,4 @@
+pub mod clone;
 pub mod env_loader;
 pub mod opencode;
 pub mod worktree;
@@ -10,7 +11,7 @@ pub struct SessionTrigger {
     pub repo_full_name: String,
     pub issue_id: u64,
     pub pr_id: Option<u64>,
-    pub action: String, // "plan", "build", "revision"
+    pub action: String,       // "plan", "build", "revision"
     pub comment_body: String, // for revision phase context
 }
 
@@ -32,7 +33,8 @@ pub fn comment_text_error(err: &str) -> String {
 }
 
 pub fn comment_text_no_context() -> String {
-    "❌ I don't have context for this PR. Please ensure this PR was created through forgebot.".to_string()
+    "❌ I don't have context for this PR. Please ensure this PR was created through forgebot."
+        .to_string()
 }
 
 /// Derive a deterministic session ID from repository and issue
@@ -43,8 +45,14 @@ pub fn comment_text_no_context() -> String {
 /// Example: `derive_session_id("Alice/My-Repo", 42)` → `"ses_42_alice_my_repo"`
 pub fn derive_session_id(repo_full_name: &str, issue_id: u64) -> String {
     let parts: Vec<&str> = repo_full_name.split('/').collect();
-    let owner = parts.get(0).map(|s| sanitize_for_session_id(s)).unwrap_or_default();
-    let repo = parts.get(1).map(|s| sanitize_for_session_id(s)).unwrap_or_default();
+    let owner = parts
+        .first()
+        .map(|s| sanitize_for_session_id(s))
+        .unwrap_or_default();
+    let repo = parts
+        .get(1)
+        .map(|s| sanitize_for_session_id(s))
+        .unwrap_or_default();
 
     format!("ses_{}_{}_{}", issue_id, owner, repo)
 }
@@ -56,7 +64,13 @@ pub fn derive_session_id(repo_full_name: &str, issue_id: u64) -> String {
 fn sanitize_for_session_id(s: &str) -> String {
     s.to_lowercase()
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -342,17 +356,15 @@ mod tests {
     #[test]
     fn test_build_revision_prompt() {
         let issue = test_issue();
-        let review_comments = vec![
-            PullRequestReviewComment {
-                id: 1,
-                body: "Please fix this function name.".to_string(),
-                user: test_user(),
-                path: "src/main.rs".to_string(),
-                line: Some(42),
-                created_at: "2024-01-03T10:00:00Z".to_string(),
-                updated_at: "2024-01-03T10:00:00Z".to_string(),
-            },
-        ];
+        let review_comments = vec![PullRequestReviewComment {
+            id: 1,
+            body: "Please fix this function name.".to_string(),
+            user: test_user(),
+            path: "src/main.rs".to_string(),
+            line: Some(42),
+            created_at: "2024-01-03T10:00:00Z".to_string(),
+            updated_at: "2024-01-03T10:00:00Z".to_string(),
+        }];
         let prompt = build_prompt("revision", &issue, &[], &review_comments, Some(123));
 
         // Check for key components

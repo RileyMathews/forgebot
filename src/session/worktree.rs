@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 
@@ -26,7 +26,7 @@ fn parse_repo_full_name(repo_full_name: &str) -> (String, String) {
         // Return as-is for the first part, empty for second if malformed
         // This should not happen in practice with valid repo names
         return (
-            parts.get(0).unwrap_or(&"").to_lowercase(),
+            parts.first().unwrap_or(&"").to_lowercase(),
             parts.get(1).unwrap_or(&"").to_lowercase(),
         );
     }
@@ -36,7 +36,7 @@ fn parse_repo_full_name(repo_full_name: &str) -> (String, String) {
 /// Get the path to the bare clone directory for a repo.
 ///
 /// Returns: `<worktree_base>/<owner>_<repo>/`
-fn bare_clone_path(config: &OpencodeConfig, repo_full_name: &str) -> PathBuf {
+pub fn bare_clone_path(config: &OpencodeConfig, repo_full_name: &str) -> PathBuf {
     let (owner, repo) = parse_repo_full_name(repo_full_name);
     let repo_dir = format!("{}_{}", owner, repo);
 
@@ -106,9 +106,9 @@ pub async fn create_worktree(
 
     // Create parent directories if needed
     if let Some(parent) = worktree_dir.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .with_context(|| format!("Failed to create parent directories: {}", parent.display()))?;
+        tokio::fs::create_dir_all(parent).await.with_context(|| {
+            format!("Failed to create parent directories: {}", parent.display())
+        })?;
     }
 
     // Run git worktree add command

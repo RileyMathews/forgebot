@@ -1,10 +1,10 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::Output;
 use tokio::process::Command;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 use tracing::{debug, warn};
 
 /// Load environment variables based on the specified loader type.
@@ -34,7 +34,10 @@ pub async fn load_env(loader_type: &str, worktree_path: &Path) -> Result<HashMap
         "none" => Ok(load_env_none()),
         "direnv" => load_env_direnv(worktree_path).await,
         "nix" => load_env_nix(worktree_path).await,
-        other => bail!("Invalid env_loader type: {}. Must be 'none', 'direnv', or 'nix'", other),
+        other => bail!(
+            "Invalid env_loader type: {}. Must be 'none', 'direnv', or 'nix'",
+            other
+        ),
     }
 }
 
@@ -88,7 +91,10 @@ pub fn parse_direnv_json(output: &str) -> Result<HashMap<String, String>> {
     let env_vars: HashMap<String, String> = serde_json::from_str(trimmed)
         .with_context(|| format!("Failed to parse direnv JSON output: {}", trimmed))?;
 
-    debug!("Parsed {} environment variables from direnv output", env_vars.len());
+    debug!(
+        "Parsed {} environment variables from direnv output",
+        env_vars.len()
+    );
     Ok(env_vars)
 }
 
@@ -96,7 +102,10 @@ pub fn parse_direnv_json(output: &str) -> Result<HashMap<String, String>> {
 ///
 /// Runs `nix print-dev-env --json` in the worktree and extracts exported string variables.
 async fn load_env_nix(worktree_path: &Path) -> Result<HashMap<String, String>> {
-    debug!("Running nix print-dev-env --json in: {}", worktree_path.display());
+    debug!(
+        "Running nix print-dev-env --json in: {}",
+        worktree_path.display()
+    );
 
     let output = run_command_with_timeout(
         Command::new("nix")
@@ -106,7 +115,9 @@ async fn load_env_nix(worktree_path: &Path) -> Result<HashMap<String, String>> {
         60, // 60 second timeout for nix (per spec)
     )
     .await
-    .with_context(|| "Failed to execute 'nix print-dev-env --json'. Is nix installed and on PATH?")?;
+    .with_context(
+        || "Failed to execute 'nix print-dev-env --json'. Is nix installed and on PATH?",
+    )?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -149,7 +160,10 @@ pub fn parse_nix_json(output: &str) -> Result<HashMap<String, String>> {
     for (name, var) in &nix_output.variables {
         // Only extract exported variables
         if var.var_type != "exported" {
-            debug!("Skipping non-exported nix variable: {} (type: {})", name, var.var_type);
+            debug!(
+                "Skipping non-exported nix variable: {} (type: {})",
+                name, var.var_type
+            );
             continue;
         }
 
@@ -224,7 +238,10 @@ mod tests {
         let json = r#"{"PATH": "/usr/local/bin:/usr/bin", "FOO": "bar"}"#;
         let result = parse_direnv_json(json).unwrap();
         assert_eq!(result.len(), 2);
-        assert_eq!(result.get("PATH"), Some(&"/usr/local/bin:/usr/bin".to_string()));
+        assert_eq!(
+            result.get("PATH"),
+            Some(&"/usr/local/bin:/usr/bin".to_string())
+        );
         assert_eq!(result.get("FOO"), Some(&"bar".to_string()));
     }
 
@@ -234,7 +251,10 @@ mod tests {
         let result = parse_direnv_json(json).unwrap();
         assert_eq!(result.len(), 2);
         assert_eq!(result.get("VAR"), Some(&"value with spaces".to_string()));
-        assert_eq!(result.get("QUOTE"), Some(&"value \"quoted\" here".to_string()));
+        assert_eq!(
+            result.get("QUOTE"),
+            Some(&"value \"quoted\" here".to_string())
+        );
     }
 
     #[test]

@@ -3,11 +3,11 @@ pub mod models;
 
 use anyhow::{Context, Result};
 use axum::{
+    Router,
     extract::{Request, State},
     http::StatusCode,
     response::Response,
     routing::post,
-    Router,
 };
 use bytes::Bytes;
 use hmac::{Hmac, Mac};
@@ -81,10 +81,7 @@ pub async fn extract_and_verify_body(
     verifier: &WebhookVerifier,
 ) -> Result<(Bytes, String), Response> {
     // Extract headers first before consuming the request
-    let signature_header = request
-        .headers()
-        .get("X-Gitea-Signature")
-        .cloned();
+    let signature_header = request.headers().get("X-Gitea-Signature").cloned();
 
     let event_type_header = request
         .headers()
@@ -122,16 +119,14 @@ pub async fn extract_and_verify_body(
     let event_type = event_type_header.unwrap_or_else(|| "unknown".to_string());
 
     // Extract raw body bytes
-    let bytes = axum::body::to_bytes(body, usize::MAX)
-        .await
-        .map_err(|e| {
-            error!("Failed to read request body: {}", e);
-            // Response::builder() with standard strings cannot fail; unwrap is safe
-            Response::builder()
-                .status(StatusCode::BAD_REQUEST)
-                .body("Failed to read body".into())
-                .unwrap()
-        })?;
+    let bytes = axum::body::to_bytes(body, usize::MAX).await.map_err(|e| {
+        error!("Failed to read request body: {}", e);
+        // Response::builder() with standard strings cannot fail; unwrap is safe
+        Response::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .body("Failed to read body".into())
+            .unwrap()
+    })?;
 
     // Verify signature
     if !verifier.verify_signature(&bytes, &signature) {
@@ -155,10 +150,7 @@ pub async fn extract_and_verify_body(
 }
 
 /// Handler for POST /webhook
-async fn webhook_handler(
-    State(state): State<AppState>,
-    request: Request,
-) -> Response {
+async fn webhook_handler(State(state): State<AppState>, request: Request) -> Response {
     // Create verifier
     let verifier = WebhookVerifier::new(state.config.server.webhook_secret.clone());
 
@@ -184,7 +176,9 @@ async fn webhook_handler(
                         .unwrap();
                 }
             };
-            match handlers::handle_issue_comment(payload, &state.db, &state.forgejo, &state.config).await {
+            match handlers::handle_issue_comment(payload, &state.db, &state.forgejo, &state.config)
+                .await
+            {
                 Ok(response) => response,
                 Err(response) => response,
             }
@@ -201,7 +195,9 @@ async fn webhook_handler(
                         .unwrap();
                 }
             };
-            match handlers::handle_pull_request(payload, &state.db, &state.forgejo, &state.config).await {
+            match handlers::handle_pull_request(payload, &state.db, &state.forgejo, &state.config)
+                .await
+            {
                 Ok(response) => response,
                 Err(response) => response,
             }
@@ -218,7 +214,14 @@ async fn webhook_handler(
                         .unwrap();
                 }
             };
-            match handlers::handle_pull_request_review_comment(payload, &state.db, &state.forgejo, &state.config).await {
+            match handlers::handle_pull_request_review_comment(
+                payload,
+                &state.db,
+                &state.forgejo,
+                &state.config,
+            )
+            .await
+            {
                 Ok(response) => response,
                 Err(response) => response,
             }
@@ -227,7 +230,9 @@ async fn webhook_handler(
             // Unknown event type, return 200 to avoid retries
             warn!("Unknown webhook event type: {}", event_type);
             // Response::builder() with standard strings cannot fail; unwrap is safe
-            handlers::handle_unknown_event(&event_type).await.unwrap_or_else(|e| e)
+            handlers::handle_unknown_event(&event_type)
+                .await
+                .unwrap_or_else(|e| e)
         }
     }
 }
@@ -243,10 +248,9 @@ pub fn create_webhook_router(state: AppState) -> Router {
 pub fn create_app_router(state: AppState) -> Router {
     // Create the UI router and nest it
     let ui_router = crate::ui::create_ui_router(state.clone());
-    
+
     // Combine webhook and UI routers
-    create_webhook_router(state)
-        .nest("/ui", ui_router)
+    create_webhook_router(state).nest("/ui", ui_router)
 }
 
 /// Start the webhook server with UI routes
@@ -263,9 +267,7 @@ pub async fn start_server(state: AppState) -> Result<()> {
     info!("Webhook server listening on {}:{}", host, port);
     info!("UI available at http://{}:{}/ui", host, port);
 
-    axum::serve(listener, app)
-        .await
-        .context("Server error")?;
+    axum::serve(listener, app).await.context("Server error")?;
 
     Ok(())
 }

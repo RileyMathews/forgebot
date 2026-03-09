@@ -1,5 +1,5 @@
 //! Integration tests for the Forgejo API client
-//! 
+//!
 //! To run these tests, you need:
 //! 1. A Forgejo instance with a test repository
 //! 2. Set FORGEBOT_TEST_URL, FORGEBOT_TEST_TOKEN, and FORGEBOT_TEST_REPO environment variables
@@ -30,8 +30,8 @@ async fn test_list_webhooks() {
         return;
     };
 
-    let client = ForgejoClient::new(&url, &token, "forgebot-test")
-        .expect("Failed to create client");
+    let client =
+        ForgejoClient::new(&url, &token, "forgebot-test").expect("Failed to create client");
 
     println!("Testing list_repo_webhooks on {}/{}...", url, repo);
 
@@ -39,7 +39,10 @@ async fn test_list_webhooks() {
         Ok(webhooks) => {
             println!("Success! Found {} webhooks:", webhooks.len());
             for webhook in &webhooks {
-                println!("  - ID: {}, URL: {}, Active: {}", webhook.id, webhook.url, webhook.active);
+                println!(
+                    "  - ID: {}, URL: {}, Active: {}",
+                    webhook.id, webhook.url, webhook.active
+                );
                 println!("    Events: {:?}", webhook.events);
             }
         }
@@ -58,14 +61,17 @@ async fn test_check_token_permissions() {
         return;
     };
 
-    let client = ForgejoClient::new(&url, &token, "forgebot-test")
-        .expect("Failed to create client");
+    let client =
+        ForgejoClient::new(&url, &token, "forgebot-test").expect("Failed to create client");
 
     println!("Testing check_token_permissions on {}/{}...", url, repo);
 
     match client.check_token_permissions(&repo).await {
         Ok(has_permissions) => {
-            println!("Token permissions check: {}", if has_permissions { "GRANTED" } else { "DENIED" });
+            println!(
+                "Token permissions check: {}",
+                if has_permissions { "GRANTED" } else { "DENIED" }
+            );
         }
         Err(e) => {
             println!("Error checking permissions: {}", e);
@@ -88,10 +94,13 @@ async fn test_get_issue() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(1);
 
-    let client = ForgejoClient::new(&url, &token, "forgebot-test")
-        .expect("Failed to create client");
+    let client =
+        ForgejoClient::new(&url, &token, "forgebot-test").expect("Failed to create client");
 
-    println!("Testing get_issue on {}/{} issue #{}...", url, repo, issue_id);
+    println!(
+        "Testing get_issue on {}/{} issue #{}...",
+        url, repo, issue_id
+    );
 
     match client.get_issue(&repo, issue_id).await {
         Ok(issue) => {
@@ -119,17 +128,21 @@ async fn test_list_issue_comments() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(1);
 
-    let client = ForgejoClient::new(&url, &token, "forgebot-test")
-        .expect("Failed to create client");
+    let client =
+        ForgejoClient::new(&url, &token, "forgebot-test").expect("Failed to create client");
 
-    println!("Testing list_issue_comments on {}/{} issue #{}...", url, repo, issue_id);
+    println!(
+        "Testing list_issue_comments on {}/{} issue #{}...",
+        url, repo, issue_id
+    );
 
     match client.list_issue_comments(&repo, issue_id).await {
         Ok(comments) => {
             println!("Success! Found {} comments:", comments.len());
             for comment in &comments {
-                println!("  - {} @ {}: {}...", 
-                    comment.user.login, 
+                println!(
+                    "  - {} @ {}: {}...",
+                    comment.user.login,
                     comment.created_at,
                     &comment.body[..comment.body.len().min(50)]
                 );
@@ -153,12 +166,15 @@ async fn test_create_and_delete_webhook() {
     let webhook_url = env::var("FORGEBOT_TEST_WEBHOOK_URL")
         .unwrap_or_else(|_| "https://example.com/webhook".to_string());
 
-    let client = ForgejoClient::new(&url, &token, "forgebot-test")
-        .expect("Failed to create client");
+    let client =
+        ForgejoClient::new(&url, &token, "forgebot-test").expect("Failed to create client");
 
     println!("Testing create_repo_webhook on {}/{}...", url, repo);
 
-    match client.create_repo_webhook(&repo, &webhook_url, "test-secret").await {
+    match client
+        .create_repo_webhook(&repo, &webhook_url, "test-secret")
+        .await
+    {
         Ok(webhook) => {
             println!("Success! Created webhook ID: {}", webhook.id);
             println!("  URL: {}", webhook.url);

@@ -7,10 +7,11 @@ use axum::{
 use serde::Deserialize;
 use std::path::Path;
 use std::sync::Arc;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 use crate::db::{
-    get_repo_by_full_name, list_repos, update_repo_env_loader, DbPool, Session,
+    DbPool, Session, get_repo_by_full_name, list_repos, reset_clone_status_if_failed,
+    update_repo_env_loader, validate_repo_full_name,
 };
 use crate::forgejo::ForgejoClient;
 use crate::session::env_loader::load_env;
@@ -37,6 +38,8 @@ struct RepoSetupTemplate {
     default_branch: String,
     env_loader: String,
     clone_present: bool,
+    clone_status: String,
+    clone_error: Option<String>,
     clone_command: String,
     webhook_registered: bool,
     webhook_url: String,
@@ -67,6 +70,8 @@ struct RepoWithStatus {
     default_branch: String,
     env_loader: String,
     clone_present: bool,
+    clone_status: String,
+    clone_error: Option<String>,
     webhook_registered: bool,
     session_count: i64,
 }
@@ -112,7 +117,7 @@ pub async fn dashboard(State(state): State<AppState>) -> impl IntoResponse {
     let mut repos_with_status = Vec::new();
     for repo in repos {
         let owner_name: Vec<&str> = repo.full_name.split('/').collect();
-        let owner = owner_name.get(0).unwrap_or(&"").to_string();
+        let owner = owner_name.first().unwrap_or(&"").to_string();
         let name = owner_name.get(1).unwrap_or(&"").to_string();
 
         // Check if clone exists
@@ -138,6 +143,8 @@ pub async fn dashboard(State(state): State<AppState>) -> impl IntoResponse {
             default_branch: repo.default_branch,
             env_loader: repo.env_loader,
             clone_present,
+            clone_status: repo.clone_status,
+            clone_error: repo.clone_error,
             webhook_registered,
             session_count,
         });
@@ -163,7 +170,8 @@ pub async fn add_repo(
     Form(form): Form<AddRepoForm>,
 ) -> impl IntoResponse {
     // Validate the full_name format
-    if !form.full_name.contains('/') {
+    if let Err(e) = validate_repo_full_name(&form.full_name) {
+        warn!(full_name = %form.full_name, error = %e, "Invalid repo full name format");
         return Redirect::to("/ui").into_response();
     }
 
@@ -189,6 +197,19 @@ pub async fn add_repo(
         error!("Failed to insert repo: {}", e);
         return Redirect::to("/ui").into_response();
     }
+
+    // Spawn background clone task
+    let db_clone = state.db.clone();
+    let config_clone = state.config.clone();
+    let full_name_clone = form.full_name.clone();
+
+    tokio::spawn(async move {
+        if let Err(e) =
+            crate::session::clone::perform_clone(&db_clone, &config_clone, &full_name_clone).await
+        {
+            error!(err = %e, full_name = %full_name_clone, "Clone task failed");
+        }
+    });
 
     // Parse owner and name for redirect
     let parts: Vec<&str> = form.full_name.split('/').collect();
@@ -231,8 +252,7 @@ pub async fn repo_setup(
     let webhook_secret = state.config.server.webhook_secret.clone();
 
     // Check webhook registration status
-    let webhook_registered =
-        check_webhook_status(&state.forgejo, &full_name, &state.config).await;
+    let webhook_registered = check_webhook_status(&state.forgejo, &full_name, &state.config).await;
 
     // Verify token permissions
     let token_valid = state
@@ -243,8 +263,7 @@ pub async fn repo_setup(
 
     // Check opencode binary
     let opencode_path = &state.config.opencode.binary;
-    let opencode_exists = which::which(opencode_path).is_ok()
-        || Path::new(opencode_path).exists();
+    let opencode_exists = which::which(opencode_path).is_ok() || Path::new(opencode_path).exists();
 
     // Check config files (basic check for config dir existence)
     let config_files_exist = state.config.opencode.config_dir.exists();
@@ -256,6 +275,8 @@ pub async fn repo_setup(
         default_branch: repo.default_branch,
         env_loader: repo.env_loader,
         clone_present,
+        clone_status: repo.clone_status,
+        clone_error: repo.clone_error,
         clone_command,
         webhook_registered,
         webhook_url,
@@ -281,17 +302,17 @@ pub async fn register_webhook(
 ) -> impl IntoResponse {
     let full_name = format!("{}/{}", owner, name);
 
-    // Get repo from database to ensure it exists
-    let _repo = match get_repo_by_full_name(&state.db, &full_name).await {
+    // Fetch current repo state
+    let repo = match get_repo_by_full_name(&state.db, &full_name).await {
         Ok(Some(repo)) => repo,
-        Ok(None) => {
-            return Redirect::to("/ui").into_response();
-        }
-        Err(e) => {
-            error!("Failed to get repo: {}", e);
-            return internal_error_response(format!("Failed to get repo: {}", e));
-        }
+        _ => return Redirect::to("/ui").into_response(),
     };
+
+    // Validate clone is ready before allowing webhook registration
+    if repo.clone_status != "ready" {
+        info!(repo = %full_name, clone_status = %repo.clone_status, "Webhook registration attempted before clone ready");
+        return Redirect::to(&format!("/ui/repo/{}/{}", owner, name)).into_response();
+    }
 
     // Build webhook URL
     let webhook_url = format_webhook_url(&state.config);
@@ -299,7 +320,11 @@ pub async fn register_webhook(
     // Create webhook
     let result = state
         .forgejo
-        .create_repo_webhook(&full_name, &webhook_url, &state.config.server.webhook_secret)
+        .create_repo_webhook(
+            &full_name,
+            &webhook_url,
+            &state.config.server.webhook_secret,
+        )
         .await;
 
     let (message, success) = match result {
@@ -443,6 +468,71 @@ pub async fn sessions(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
+/// POST /ui/repo/:owner/:name/retry-clone - Retry a failed or pending clone
+pub async fn retry_clone(
+    State(state): State<AppState>,
+    AxumPath((owner, name)): AxumPath<(String, String)>,
+) -> impl IntoResponse {
+    let full_name = format!("{}/{}", owner, name);
+
+    // Validate the full_name format as a safety check
+    if let Err(e) = validate_repo_full_name(&full_name) {
+        warn!(full_name = %full_name, error = %e, "Invalid repo full name in retry");
+        return Redirect::to("/ui").into_response();
+    }
+
+    // Fetch the repo
+    let repo = match get_repo_by_full_name(&state.db, &full_name).await {
+        Ok(Some(repo)) => repo,
+        Ok(None) => {
+            return Redirect::to("/ui").into_response();
+        }
+        Err(e) => {
+            error!("Failed to get repo: {}", e);
+            return internal_error_response(format!("Failed to get repo: {}", e));
+        }
+    };
+
+    // If clone_status is "cloning" or "ready", can't retry
+    if repo.clone_status == "cloning" || repo.clone_status == "ready" {
+        return Redirect::to(&format!("/ui/repo/{}/{}", owner, name)).into_response();
+    }
+
+    // Atomically reset to "pending" state - only succeeds if still failed/pending
+    match reset_clone_status_if_failed(&state.db, &full_name).await {
+        Ok(true) => {
+            // Successfully transitioned to pending - spawn clone task
+            let db_clone = state.db.clone();
+            let config_clone = state.config.clone();
+            let full_name_clone = full_name.clone();
+
+            tokio::spawn(async move {
+                if let Err(e) =
+                    crate::session::clone::perform_clone(&db_clone, &config_clone, &full_name_clone)
+                        .await
+                {
+                    error!(err = %e, full_name = %full_name_clone, "Retry clone task failed");
+                }
+            });
+        }
+        Ok(false) => {
+            // No rows updated - status changed or another retry is in progress
+            // Just redirect without spawning a new clone task
+            info!(
+                full_name = %full_name,
+                "Retry clone skipped - status changed or concurrent retry in progress"
+            );
+        }
+        Err(e) => {
+            error!("Failed to reset clone status: {}", e);
+            return internal_error_response(format!("Failed to reset clone status: {}", e));
+        }
+    }
+
+    // Redirect back to repo setup page
+    Redirect::to(&format!("/ui/repo/{}/{}", owner, name)).into_response()
+}
+
 // ============================================================================
 // Helper Functions
 // ============================================================================
@@ -461,9 +551,7 @@ async fn check_webhook_status(
     let expected_url = format_webhook_url(config);
 
     match forgejo.list_repo_webhooks(full_name).await {
-        Ok(webhooks) => webhooks
-            .iter()
-            .any(|w| w.url == expected_url && w.active),
+        Ok(webhooks) => webhooks.iter().any(|w| w.url == expected_url && w.active),
         Err(e) => {
             warn!("Failed to list webhooks for {}: {}", full_name, e);
             false
@@ -490,7 +578,7 @@ fn format_clone_command(
     _default_branch: &str,
 ) -> String {
     let parts: Vec<&str> = full_name.split('/').collect();
-    let owner = parts.get(0).unwrap_or(&"");
+    let owner = parts.first().unwrap_or(&"");
     let repo = parts.get(1).unwrap_or(&"");
     let repo_dir = format!("{}_{}", owner, repo);
     let worktree_base = config.opencode.worktree_base.display();
@@ -502,12 +590,9 @@ fn format_clone_command(
 }
 
 /// Get the bare clone path for a repo
-fn get_bare_clone_path(
-    config: &Arc<crate::config::Config>,
-    full_name: &str,
-) -> std::path::PathBuf {
+fn get_bare_clone_path(config: &Arc<crate::config::Config>, full_name: &str) -> std::path::PathBuf {
     let parts: Vec<&str> = full_name.split('/').collect();
-    let owner = parts.get(0).unwrap_or(&"").to_lowercase();
+    let owner = parts.first().unwrap_or(&"").to_lowercase();
     let repo = parts.get(1).unwrap_or(&"").to_lowercase();
     let repo_dir = format!("{}_{}", owner, repo);
 
@@ -546,8 +631,7 @@ async fn render_repo_setup_with_message(
     let webhook_secret = state.config.server.webhook_secret.clone();
 
     // Check webhook registration status
-    let webhook_registered =
-        check_webhook_status(&state.forgejo, &full_name, &state.config).await;
+    let webhook_registered = check_webhook_status(&state.forgejo, &full_name, &state.config).await;
 
     // Verify token permissions
     let token_valid = state
@@ -558,8 +642,7 @@ async fn render_repo_setup_with_message(
 
     // Check opencode binary
     let opencode_path = &state.config.opencode.binary;
-    let opencode_exists = which::which(opencode_path).is_ok()
-        || Path::new(opencode_path).exists();
+    let opencode_exists = which::which(opencode_path).is_ok() || Path::new(opencode_path).exists();
 
     // Check config files
     let config_files_exist = state.config.opencode.config_dir.exists();
@@ -571,6 +654,8 @@ async fn render_repo_setup_with_message(
         default_branch: repo.default_branch,
         env_loader: repo.env_loader,
         clone_present,
+        clone_status: repo.clone_status,
+        clone_error: repo.clone_error,
         clone_command,
         webhook_registered,
         webhook_url,
@@ -594,15 +679,17 @@ fn internal_error_response(message: String) -> Response {
     // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
     Response::builder()
         .status(StatusCode::INTERNAL_SERVER_ERROR)
-        .body(format!(
-            r#"<!DOCTYPE html>
+        .body(
+            format!(
+                r#"<!DOCTYPE html>
 <html><body>
 <h1>Internal Server Error</h1>
 <p>{}</p>
 <p><a href="/ui">Return to Dashboard</a></p>
 </body></html>"#,
-            message
+                message
+            )
+            .into(),
         )
-        .into())
         .unwrap()
 }

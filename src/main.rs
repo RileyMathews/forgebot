@@ -1,14 +1,15 @@
 use anyhow::{Context, Result};
+use sqlx::Row;
 use std::sync::Arc;
-use tracing::{info, warn, Level};
+use tracing::{Level, error, info, warn};
 use tracing_subscriber::FmtSubscriber;
 
 mod config;
 mod db;
 pub mod forgejo;
 mod session;
-mod webhook;
 mod ui;
+mod webhook;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -22,8 +23,7 @@ async fn main() -> Result<()> {
     info!("forgebot starting");
 
     // Load configuration from environment variables
-    let config = config::Config::load()
-        .context("Failed to load configuration")?;
+    let config = config::Config::load().context("Failed to load configuration")?;
 
     // Set up opencode config directory
     session::opencode::setup_opencode_config_dir(&config.opencode)
@@ -52,12 +52,42 @@ async fn main() -> Result<()> {
 
     info!("Database initialized successfully");
 
+    // Crash recovery: reset any repos stuck in 'cloning' state
+    let stuck_clones = sqlx::query(
+        r#"
+        SELECT full_name FROM repos WHERE clone_status = 'cloning'
+    "#,
+    )
+    .fetch_all(&db_pool)
+    .await
+    .context("failed to query stuck clones")?;
+
+    for row in stuck_clones {
+        let full_name: String = row.get("full_name");
+        match db::update_repo_clone_status(
+            &db_pool,
+            &full_name,
+            "failed",
+            Some("Clone interrupted by service restart"),
+        )
+        .await
+        {
+            Ok(_) => info!(full_name = %full_name, "Reset stuck clone to failed state"),
+            Err(e) => error!(
+                full_name = %full_name,
+                err = %e,
+                "Failed to reset stuck clone (continuing startup)"
+            ),
+        }
+    }
+
     // Initialize Forgejo client
     let forgejo_client = forgejo::ForgejoClient::new(
         &config.forgejo.url,
         &config.forgejo.token,
         &config.forgejo.bot_username,
-    ).context("Failed to create Forgejo client")?;
+    )
+    .context("Failed to create Forgejo client")?;
 
     info!(
         base_url = %config.forgejo.url,
@@ -65,9 +95,9 @@ async fn main() -> Result<()> {
     );
 
     // Run startup crash recovery before starting the server
-    let recovery_result = session::opencode::startup_crash_recovery(&db_pool, &forgejo_client, &config)
-        .await;
-    
+    let recovery_result =
+        session::opencode::startup_crash_recovery(&db_pool, &forgejo_client, &config).await;
+
     match recovery_result {
         Ok(count) => {
             info!(
@@ -93,7 +123,7 @@ async fn main() -> Result<()> {
         port = %config.server.port,
         "Starting webhook server"
     );
-    
+
     webhook::start_server(app_state)
         .await
         .context("Webhook server failed")?;
