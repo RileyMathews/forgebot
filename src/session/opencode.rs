@@ -190,7 +190,11 @@ pub async fn run_opencode(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    debug!("Running opencode command: {:?}", cmd);
+    debug!(
+        "Running opencode command: {:?} prompt={}",
+        cmd,
+        prompt.chars().take(100).collect::<String>()
+    );
 
     let output = cmd
         .output()
@@ -198,6 +202,7 @@ pub async fn run_opencode(
         .with_context(|| format!("Failed to spawn opencode process: {}", binary))?;
 
     let exit_code = output.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     if output.status.success() {
@@ -205,12 +210,13 @@ pub async fn run_opencode(
         Ok(())
     } else {
         error!(
-            "opencode failed with exit code {}: stderr={}",
-            exit_code, stderr
+            "opencode failed with exit code {}: stdout={}, stderr={}",
+            exit_code, stdout, stderr
         );
         Err(anyhow!(
-            "opencode process failed with exit code {}: {}",
+            "opencode process failed with exit code {}: stdout={}, stderr={}",
             exit_code,
+            stdout,
             stderr
         ))
     }
