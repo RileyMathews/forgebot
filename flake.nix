@@ -135,13 +135,13 @@
     {
       # NixOS module
       nixosModules = {
-        forgebot = import ./nix/module.nix;
+        forgebot = import ./nix/module.nix self;
         default = self.nixosModules.forgebot;
       };
 
       # Home Manager module (optional, for user-level deployment)
       homeManagerModules = {
-        forgebot = import ./nix/module.nix;
+        forgebot = import ./nix/module.nix self;
         default = self.homeManagerModules.forgebot;
       };
     }
