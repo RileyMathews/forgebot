@@ -52,7 +52,7 @@ impl ForgejoClient {
 
     /// GET an issue by ID
     pub async fn get_issue(&self, repo: &str, issue_id: u64) -> Result<Issue> {
-        let url = self.api_url(&format!("/repos/{}/issues/{}", repo, issue_id));
+        let url = self.api_url(&format!("/api/v1/repos/{}/issues/{}", repo, issue_id));
         debug!("Fetching issue from: {}", url);
 
         let response = self
@@ -87,7 +87,7 @@ impl ForgejoClient {
 
     /// List comments on an issue
     pub async fn list_issue_comments(&self, repo: &str, issue_id: u64) -> Result<Vec<IssueComment>> {
-        let url = self.api_url(&format!("/repos/{}/issues/{}/comments", repo, issue_id));
+        let url = self.api_url(&format!("/api/v1/repos/{}/issues/{}/comments", repo, issue_id));
         debug!("Fetching issue comments from: {}", url);
 
         let response = self
@@ -122,7 +122,7 @@ impl ForgejoClient {
 
     /// List review comments on a pull request
     pub async fn list_pr_review_comments(&self, repo: &str, pr_id: u64) -> Result<Vec<PullRequestReviewComment>> {
-        let url = self.api_url(&format!("/repos/{}/pulls/{}/comments", repo, pr_id));
+        let url = self.api_url(&format!("/api/v1/repos/{}/pulls/{}/comments", repo, pr_id));
         debug!("Fetching PR review comments from: {}", url);
 
         let response = self
@@ -157,7 +157,7 @@ impl ForgejoClient {
 
     /// Post a comment on an issue
     pub async fn post_issue_comment(&self, repo: &str, issue_id: u64, body: &str) -> Result<IssueComment> {
-        let url = self.api_url(&format!("/repos/{}/issues/{}/comments", repo, issue_id));
+        let url = self.api_url(&format!("/api/v1/repos/{}/issues/{}/comments", repo, issue_id));
         debug!("Posting issue comment to: {}", url);
 
         let payload = CommentPayload {
@@ -203,7 +203,7 @@ impl ForgejoClient {
 
     /// List webhooks for a repository
     pub async fn list_repo_webhooks(&self, repo: &str) -> Result<Vec<Webhook>> {
-        let url = self.api_url(&format!("/repos/{}/hooks", repo));
+        let url = self.api_url(&format!("/api/v1/repos/{}/hooks", repo));
         debug!("Fetching webhooks from: {}", url);
 
         let response = self
@@ -238,7 +238,7 @@ impl ForgejoClient {
 
     /// Create a webhook for a repository
     pub async fn create_repo_webhook(&self, repo: &str, url: &str, secret: &str) -> Result<Webhook> {
-        let api_url = self.api_url(&format!("/repos/{}/hooks", repo));
+        let api_url = self.api_url(&format!("/api/v1/repos/{}/hooks", repo));
         debug!("Creating webhook at: {}", api_url);
 
         let payload = WebhookPayload {
@@ -289,7 +289,7 @@ impl ForgejoClient {
 
     /// Check if the token has permissions by attempting to list collaborators
     pub async fn check_token_permissions(&self, repo: &str) -> Result<bool> {
-        let url = self.api_url(&format!("/repos/{}/collaborators", repo));
+        let url = self.api_url(&format!("/api/v1/repos/{}/collaborators", repo));
         debug!("Checking token permissions at: {}", url);
 
         let response = self
