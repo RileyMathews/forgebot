@@ -123,6 +123,7 @@ pub fn setup_opencode_config_dir(config: &OpencodeConfig) -> Result<()> {
 pub struct RunOpencodeParams<'a> {
     pub db: &'a DbPool,
     pub config: &'a Config,
+    pub repo_full_name: &'a str,
     pub session_record_id: &'a str,
     pub derived_session_id: &'a str,
     pub external_opencode_session_id: Option<&'a str>,
@@ -147,6 +148,7 @@ pub async fn run_opencode(params: RunOpencodeParams<'_>) -> Result<Option<String
     let binary = &params.config.opencode.binary;
     let opencode_config_home = params.config.opencode.config_dir.clone();
     let db = params.db;
+    let repo_full_name = params.repo_full_name;
     let session_record_id = params.session_record_id;
     let derived_session_id = params.derived_session_id;
     let agent_mode = params.agent_mode;
@@ -192,7 +194,7 @@ pub async fn run_opencode(params: RunOpencodeParams<'_>) -> Result<Option<String
     );
     env_vars.insert(
         "FORGEBOT_REPO".to_string(),
-        params.config.forgejo.url.clone(),
+        repo_full_name.to_string(),
     );
     // Note: XDG_DATA_HOME and XDG_CONFIG_HOME are set by the systemd service
     // and inherited from the process environment. These control where opencode
@@ -713,6 +715,7 @@ Error output: {}",
     let opencode_result = run_opencode(RunOpencodeParams {
         db,
         config,
+        repo_full_name: &trigger.repo_full_name,
         session_record_id: &session_record.id,
         derived_session_id: &session_id,
         external_opencode_session_id: external_session_id,
