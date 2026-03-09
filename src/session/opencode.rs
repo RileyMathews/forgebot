@@ -183,7 +183,7 @@ pub async fn run_opencode(
         .arg(session_id)
         .arg("--agent")
         .arg(agent_mode)
-        .arg("--cwd")
+        .arg("--dir")
         .arg(worktree_path)
         .arg("--quiet")
         .arg(prompt)
