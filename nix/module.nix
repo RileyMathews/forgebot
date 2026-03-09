@@ -227,7 +227,7 @@ in
     let
       # Build the service PATH
       servicePath = lib.makeBinPath (
-        [ cfg.package ]
+        [ cfg.package pkgs.git ]
         ++ lib.optional (cfg.opencodePackage != null) cfg.opencodePackage
       );
     in

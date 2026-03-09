@@ -237,6 +237,10 @@ For non-NixOS systems, follow this alternative deployment path:
     Environment="FORGEBOT_FORGEBOT_HOST=https://forgebot.example.com"
     Environment="FORGEBOT_FORGEJO_BOT_USERNAME=forgebot"
     
+    # On systemd, use absolute paths for git and opencode to avoid PATH issues
+    Environment="FORGEBOT_GIT_BINARY=/usr/bin/git"
+    Environment="FORGEBOT_OPENCODE_BINARY=/usr/local/bin/opencode"
+    
     # Ensure opencode is in PATH
    Environment="PATH=/usr/local/bin:/usr/bin:/bin"
    Environment="RUST_LOG=info"
@@ -291,6 +295,7 @@ These have sensible defaults if not set:
 | `FORGEBOT_OPENCODE_BINARY` | `opencode` | Path to opencode binary |
 | `FORGEBOT_OPENCODE_WORKTREE_BASE` | `/var/lib/forgebot/worktrees` | Base directory for git worktrees |
 | `FORGEBOT_OPENCODE_CONFIG_DIR` | `/var/lib/forgebot/opencode-config` | Directory for opencode config files |
+| `FORGEBOT_GIT_BINARY` | `git` | Path to git binary. Set this to an absolute path (e.g., `/usr/bin/git`) if running under systemd or other environments with minimal PATH. |
 | `FORGEBOT_DATABASE_PATH` | `/var/lib/forgebot/forgebot.db` | Path to SQLite database |
 
 ### Other Environment Variables

@@ -30,6 +30,7 @@ pub struct OpencodeConfig {
     pub binary: String,
     pub worktree_base: PathBuf,
     pub config_dir: PathBuf,
+    pub git_binary: String,
 }
 
 #[derive(Debug, Clone)]
@@ -84,6 +85,7 @@ impl Config {
         };
         let bot_username = env_var_with_default("FORGEBOT_FORGEJO_BOT_USERNAME", "forgebot");
         let opencode_binary = env_var_with_default("FORGEBOT_OPENCODE_BINARY", "opencode");
+        let git_binary = env_var_with_default("FORGEBOT_GIT_BINARY", "git");
         let worktree_base = env_var_path_with_default(
             "FORGEBOT_OPENCODE_WORKTREE_BASE",
             "/var/lib/forgebot/worktrees",
@@ -104,6 +106,7 @@ impl Config {
         info!("  FORGEBOT_FORGEJO_TOKEN: [REDACTED]");
         info!("  FORGEBOT_FORGEJO_BOT_USERNAME: {}", bot_username);
         info!("  FORGEBOT_OPENCODE_BINARY: {}", opencode_binary);
+        info!("  FORGEBOT_GIT_BINARY: {}", git_binary);
         info!(
             "  FORGEBOT_OPENCODE_WORKTREE_BASE: {}",
             worktree_base.display()
@@ -127,6 +130,7 @@ impl Config {
                 binary: opencode_binary,
                 worktree_base,
                 config_dir,
+                git_binary,
             },
             database: DatabaseConfig {
                 path: database_path,

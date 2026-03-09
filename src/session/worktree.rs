@@ -121,7 +121,7 @@ pub async fn create_worktree(
         branch_name
     );
 
-    let output = tokio::process::Command::new("git")
+    let output = tokio::process::Command::new(&config.git_binary)
         .arg("worktree")
         .arg("add")
         .arg(&worktree_dir)
@@ -156,10 +156,11 @@ pub async fn create_worktree(
 ///
 /// # Arguments
 /// * `path` - The path to the worktree to remove
+/// * `git_binary` - Path to the git binary
 ///
 /// # Errors
 /// Returns an error if the git worktree remove command fails.
-pub async fn remove_worktree(path: &Path) -> Result<()> {
+pub async fn remove_worktree(path: &Path, git_binary: &str) -> Result<()> {
     // Soft failure if path doesn't exist - just log warning and return Ok
     if !path.exists() {
         warn!(
@@ -177,7 +178,7 @@ pub async fn remove_worktree(path: &Path) -> Result<()> {
     info!("Removing worktree at {}", path.display());
 
     // Run git worktree remove --force command from parent directory
-    let output = tokio::process::Command::new("git")
+    let output = tokio::process::Command::new(git_binary)
         .arg("worktree")
         .arg("remove")
         .arg("--force")
@@ -210,6 +211,7 @@ mod tests {
             binary: "opencode".to_string(),
             worktree_base: PathBuf::from("/var/lib/forgebot/worktrees"),
             config_dir: PathBuf::from("/etc/forgebot"),
+            git_binary: "git".to_string(),
         }
     }
 

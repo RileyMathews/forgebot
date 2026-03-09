@@ -439,8 +439,9 @@ async fn handle_pr_closed(
     // Spawn worktree removal in background
     let worktree_path_clone = worktree_path.clone();
     let session_id_clone = session.id.clone();
+    let git_binary = config.opencode.git_binary.clone();
     tokio::spawn(async move {
-        if let Err(e) = remove_worktree(&worktree_path_clone).await {
+        if let Err(e) = remove_worktree(&worktree_path_clone, &git_binary).await {
             error!(
                 "Failed to remove worktree for session {}: {}",
                 session_id_clone, e

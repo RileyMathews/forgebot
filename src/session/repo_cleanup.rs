@@ -54,13 +54,15 @@ pub async fn remove_repository(
 
     // c) Remove all worktrees (await completion - don't fire-and-forget)
     let mut worktree_tasks = Vec::new();
+    let git_binary = config.opencode.git_binary.clone();
     for session in sessions {
         let worktree_path = PathBuf::from(&session.worktree_path);
         let repo_name = full_name.to_string();
         let issue_id = session.issue_id;
+        let git_binary_clone = git_binary.clone();
 
         let handle = tokio::spawn(async move {
-            match remove_worktree(&worktree_path).await {
+            match remove_worktree(&worktree_path, &git_binary_clone).await {
                 Ok(()) => {
                     info!(
                         repo = %repo_name,
@@ -182,6 +184,7 @@ mod tests {
                 binary: "opencode".to_string(),
                 worktree_base: std::path::PathBuf::from("/tmp/worktrees"),
                 config_dir: std::path::PathBuf::from("/tmp/config"),
+                git_binary: "git".to_string(),
             },
             database: crate::config::DatabaseConfig {
                 path: std::path::PathBuf::from("/tmp/test.db"),

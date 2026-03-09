@@ -117,7 +117,7 @@ pub async fn perform_clone(db: &DbPool, config: &Arc<Config>, repo_full_name: &s
 
     let clone_result = tokio::time::timeout(
         CLONE_TIMEOUT,
-        Command::new("git")
+        Command::new(&config.opencode.git_binary)
             .arg("clone")
             .arg("--bare")
             .arg(&clone_url)
@@ -239,6 +239,7 @@ mod tests {
                 binary: "opencode".to_string(),
                 worktree_base: PathBuf::from("/tmp/forgebot-test-worktrees"),
                 config_dir: PathBuf::from("/tmp/forgebot-test-config"),
+                git_binary: "git".to_string(),
             },
             database: crate::config::DatabaseConfig {
                 path: PathBuf::from("/tmp/forgebot-test.db"),

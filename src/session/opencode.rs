@@ -657,6 +657,7 @@ mod tests {
             binary: "opencode".to_string(),
             worktree_base: temp_dir.join("worktrees"),
             config_dir: temp_dir.clone(),
+            git_binary: "git".to_string(),
         };
 
         // First call should create all files
@@ -699,6 +700,7 @@ mod tests {
             binary: "opencode".to_string(),
             worktree_base: temp_dir.join("worktrees"),
             config_dir: temp_dir.clone(),
+            git_binary: "git".to_string(),
         };
 
         // Setup should succeed and not overwrite existing files
