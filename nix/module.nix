@@ -402,7 +402,7 @@ in
             "FORGEBOT_SERVER_PORT=${toString cfg.server.port}"
             "FORGEBOT_FORGEJO_URL=${cfg.forgejo.url}"
             "FORGEBOT_FORGEJO_BOT_USERNAME=${cfg.forgejo.botUsername}"
-            "FORGEBOT_OPENCODE_BINARY=${cfg.opencode.binary}"
+            "FORGEBOT_OPENCODE_BINARY=${if cfg.opencode.binary == "opencode" && cfg.opencodePackage != null then "${cfg.opencodePackage}/bin/opencode" else cfg.opencode.binary}"
             "FORGEBOT_OPENCODE_WORKTREE_BASE=${cfg.opencode.worktreeBase}"
             "FORGEBOT_OPENCODE_CONFIG_DIR=${cfg.dataDir}/config/opencode/.opencode"
             "FORGEBOT_OPENCODE_MODEL=${cfg.opencode.model}"
