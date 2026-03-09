@@ -40,61 +40,20 @@ In your `flake.nix`:
 }
 ```
 
-### 2. Pass the forgebot package to your NixOS systems
-
-In your flake's `outputs` section, when creating NixOS systems, extract and pass the forgebot package:
-
-```nix
-outputs = { self, nixpkgs, forgebot, ... }:
-  let
-    system = "x86_64-linux";
-  in {
-    nixosConfigurations.forgebot = nixpkgs.lib.nixosSystem {
-      inherit system;
-      specialArgs = {
-        inherit system;
-        forgeBotPkg = forgebot.packages.${system}.forgebot;
-        # ... other args
-      };
-      modules = [ ./configuration.nix ];
-    };
-  };
-```
-
-### 3. Import the NixOS module
+### 2. Import the NixOS module and configure
 
 In your `configuration.nix`:
 
 ```nix
-{ config, forgeBotPkg, ... }:
+{ forgebot, ... }:
 {
   imports = [
-    # ... other imports
+    forgebot.nixosModules.forgebot
   ];
   
-  # ... rest of config
-}
-```
-
-### 4. Configure the service
-
-Add the forgebot service configuration to your NixOS config:
-
-```nix
-{ config, forgeBotPkg, ... }:
-{
   services.forgebot = {
     enable = true;
-    package = forgeBotPkg;  # Pass the package from specialArgs
-    
-    # Server configuration (optional - defaults shown)
-    server.host = "127.0.0.1";  # default: 127.0.0.1
-    server.port = 8765;         # default: 8765
-    
-    # Forgejo instance URL (required - non-secret)
     forgejo.url = "https://git.example.com";
-    
-    # Path to secrets file (required - see below)
     secretsFilePath = "/run/secrets/forgebot";
   };
 }
@@ -103,27 +62,36 @@ Add the forgebot service configuration to your NixOS config:
 **For production deployments with sops-nix secret management:**
 
 ```nix
-{ config, forgeBotPkg, ... }:
+{ config, forgebot, ... }:
 {
-  # First define your secrets with sops-nix
+  imports = [
+    forgebot.nixosModules.forgebot
+  ];
+  
   sops.secrets.forgebot = { };
   
   services.forgebot = {
     enable = true;
-    package = forgeBotPkg;  # Pass the package from specialArgs
-    
-    # Server configuration (optional - uses defaults if not specified)
-    server.host = "127.0.0.1";
-    server.port = 8765;
-    
-    # Forgejo instance URL (required - non-secret, set via NixOS config)
     forgejo.url = "https://git.example.com";
-    
-    # Secrets file loaded via systemd EnvironmentFile
-    # Only contains webhook secret and API token
     secretsFilePath = config.sops.secrets.forgebot.path;
   };
 }
+```
+
+**Optional server configuration** (if you want to customize):
+
+```nix
+services.forgebot = {
+  enable = true;
+  
+  # Optional - customize server config (shown with defaults)
+  server.host = "127.0.0.1";
+  server.port = 8765;
+  forgejo.url = "https://git.example.com";
+  
+  # Required - path to secrets file
+  secretsFilePath = "/run/secrets/forgebot";
+};
 ```
 
 The secrets file must contain:
@@ -142,7 +110,7 @@ All other configuration values use sensible defaults:
 - `FORGEBOT_OPENCODE_CONFIG_DIR`: `/var/lib/forgebot/opencode-config`
 - `FORGEBOT_DATABASE_PATH`: `/var/lib/forgebot/forgebot.db`
 
-### 5. Apply the configuration
+### 3. Apply the configuration
 
 ```bash
 sudo nixos-rebuild switch
@@ -153,7 +121,7 @@ The forgebot module will:
 2. Set up the data directory structure
 3. Start the forgebot service with environment variables configured
 
-### 6. Verify startup
+### 4. Verify startup
 
 Check the service logs for successful initialization:
 
@@ -163,7 +131,7 @@ journalctl -u forgebot -f
 
 You should see messages indicating the database is initialized, migrations completed, and the server is listening.
 
-### 7. Register repositories
+### 5. Register repositories
 
 Navigate to the setup UI at `http://<host>:8765/ui`:
 
@@ -176,7 +144,7 @@ Navigate to the setup UI at `http://<host>:8765/ui`:
 
 This inserts the repository into the database. The repo will appear in the list with an **"Incomplete"** status.
 
-### 8. Clone watched repositories
+### 6. Clone watched repositories
 
 For each registered repository, the setup page at `/ui/repo/:owner/:name` shows the exact clone command:
 
@@ -193,7 +161,7 @@ cd /var/lib/forgebot/worktrees
 git clone --bare https://git.example.com/alice/myrepo.git alice_myrepo
 ```
 
-### 9. Complete repository setup
+### 7. Complete repository setup
 
 Back in the UI at `/ui/repo/:owner/:name`, complete all four steps:
 

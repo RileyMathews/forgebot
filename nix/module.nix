@@ -1,3 +1,4 @@
+self:
 { config, lib, pkgs, ... }:
 
 let
@@ -9,22 +10,12 @@ in
 
     package = lib.mkOption {
       type = lib.types.package;
+      default = self.packages.${pkgs.stdenv.hostPlatform.system}.forgebot;
+      defaultText = lib.literalExpression "self.packages.\${pkgs.stdenv.hostPlatform.system}.forgebot";
       description = ''
         The forgebot package to use.
 
-        Since forgebot is not in nixpkgs, you must provide it via your flake.
-
-        In your flake.nix, pass it via specialArgs:
-          <literal>
-          specialArgs = {
-            forgebot = forgebot.packages.${system}.forgebot;
-          };
-          </literal>
-
-        Then in your NixOS configuration:
-          <literal>
-          services.forgebot.package = forgebot;
-          </literal>
+        Defaults to the package from the forgebot flake.
       '';
     };
 
