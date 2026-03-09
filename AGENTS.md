@@ -31,6 +31,8 @@ nix develop       # or: direnv allow
 
 Required secrets go in `.envrc.secret` (not committed). The `.envrc` sets all configurable paths to `~/.local/state/forgebot-local-dev/` automatically.
 
+For a testing repository use the `riley/terminal-config` repository in forgejo.
+
 ## Build / Lint / Test Commands
 
 ```bash
