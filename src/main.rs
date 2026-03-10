@@ -5,6 +5,8 @@ use std::sync::Arc;
 use tracing::{Level, error, info, warn};
 use tracing_subscriber::FmtSubscriber;
 
+use forgebot::session::CloneStatus;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize tracing subscriber
@@ -60,9 +62,10 @@ async fn main() -> Result<()> {
     // Crash recovery: reset any repos stuck in 'cloning' state
     let stuck_clones = sqlx::query(
         r#"
-        SELECT full_name FROM repos WHERE clone_status = 'cloning'
+        SELECT full_name FROM repos WHERE clone_status = ?1
     "#,
     )
+    .bind(CloneStatus::Cloning.as_str())
     .fetch_all(&db_pool)
     .await
     .context("failed to query stuck clones")?;
@@ -72,7 +75,7 @@ async fn main() -> Result<()> {
         match db::update_repo_clone_status(
             &db_pool,
             &full_name,
-            "failed",
+            CloneStatus::Failed,
             Some("Clone interrupted by service restart"),
         )
         .await

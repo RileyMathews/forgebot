@@ -14,6 +14,7 @@ use crate::db::{
     validate_repo_full_name,
 };
 use crate::forgejo::ForgejoClient;
+use crate::session::CloneStatus;
 use crate::session::repo_cleanup;
 use crate::webhook::AppState;
 
@@ -107,7 +108,7 @@ pub async fn dashboard(State(state): State<AppState>) -> impl IntoResponse {
             owner,
             name,
             default_branch: repo.default_branch,
-            clone_status: repo.clone_status,
+            clone_status: repo.clone_status.as_str().to_string(),
             webhook_registered,
         });
     }
@@ -230,7 +231,7 @@ pub async fn repo_setup(
         name: name.clone(),
         default_branch: repo.default_branch,
         env_loader: repo.env_loader,
-        clone_status: repo.clone_status,
+        clone_status: repo.clone_status.as_str().to_string(),
         webhook_registered,
         webhook_url,
         webhook_secret,
@@ -262,8 +263,8 @@ pub async fn register_webhook(
     };
 
     // Validate clone is ready before allowing webhook registration
-    if repo.clone_status != "ready" {
-        info!(repo = %full_name, clone_status = %repo.clone_status, "Webhook registration attempted before clone ready");
+    if repo.clone_status != CloneStatus::Ready {
+        info!(repo = %full_name, clone_status = %repo.clone_status.as_str(), "Webhook registration attempted before clone ready");
         return Redirect::to(&format!("/repo/{}/{}", owner, name)).into_response();
     }
 
@@ -346,7 +347,7 @@ pub async fn retry_clone(
     };
 
     // If clone_status is "cloning" or "ready", can't retry
-    if repo.clone_status == "cloning" || repo.clone_status == "ready" {
+    if repo.clone_status == CloneStatus::Cloning || repo.clone_status == CloneStatus::Ready {
         return Redirect::to(&format!("/repo/{}/{}", owner, name)).into_response();
     }
 
@@ -489,7 +490,7 @@ async fn render_repo_setup_with_message(
         name,
         default_branch: repo.default_branch,
         env_loader: repo.env_loader,
-        clone_status: repo.clone_status,
+        clone_status: repo.clone_status.as_str().to_string(),
         webhook_registered,
         webhook_url,
         webhook_secret,
