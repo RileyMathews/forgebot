@@ -121,10 +121,8 @@ pub fn setup_opencode_config_dir(config: &OpencodeConfig) -> Result<()> {
 
 /// Parameters for running opencode
 pub struct RunOpencodeParams<'a> {
-    pub db: &'a DbPool,
     pub config: &'a Config,
     pub repo_full_name: &'a str,
-    pub session_record_id: &'a str,
     pub derived_session_id: &'a str,
     pub external_opencode_session_id: Option<&'a str>,
     pub agent_mode: &'a str,
@@ -136,7 +134,6 @@ pub struct RunOpencodeParams<'a> {
 
 /// Run opencode subprocess with the given parameters.
 ///
-/// Captures stdout and stderr and saves them to the database for debugging.
 /// If external_opencode_session_id is provided, continues that session.
 /// Otherwise, creates a new session with the derived_session_id as title.
 ///
@@ -147,9 +144,7 @@ pub struct RunOpencodeParams<'a> {
 pub async fn run_opencode(params: RunOpencodeParams<'_>) -> Result<Option<String>> {
     let binary = &params.config.opencode.binary;
     let opencode_config_home = params.config.opencode.config_dir.clone();
-    let db = params.db;
     let repo_full_name = params.repo_full_name;
-    let session_record_id = params.session_record_id;
     let derived_session_id = params.derived_session_id;
     let agent_mode = params.agent_mode;
     let model = params.model;
@@ -169,14 +164,6 @@ pub async fn run_opencode(params: RunOpencodeParams<'_>) -> Result<Option<String
     for (key, value) in std::env::vars() {
         env_vars.insert(key, value);
     }
-
-    // Log the PATH for debugging
-    let path = env_vars
-        .get("PATH")
-        .cloned()
-        .unwrap_or_else(|| "NOT_SET".to_string());
-    info!("Environment PATH: {}", path);
-    info!("Binary name: {}", binary);
 
     let base_path = env_vars
         .get("PATH")
@@ -332,16 +319,6 @@ esac
         std::env::var("TEMP").unwrap_or_else(|_| "/tmp".to_string()),
     );
 
-    info!(
-        home = %env_vars.get("HOME").cloned().unwrap_or_else(|| "<unset>".to_string()),
-        xdg_data_home = %env_vars.get("XDG_DATA_HOME").cloned().unwrap_or_else(|| "<unset>".to_string()),
-        xdg_config_home = %env_vars.get("XDG_CONFIG_HOME").cloned().unwrap_or_else(|| "<unset>".to_string()),
-        xdg_cache_home = %env_vars.get("XDG_CACHE_HOME").cloned().unwrap_or_else(|| "<unset>".to_string()),
-        bun_cache_dir = %env_vars.get("BUN_INSTALL_CACHE_DIR").cloned().unwrap_or_else(|| "<unset>".to_string()),
-        tmpdir = %env_vars.get("TMPDIR").cloned().unwrap_or_else(|| "<unset>".to_string()),
-        "Effective runtime environment for opencode"
-    );
-
     // Resolve binary path from PATH if not an absolute path
     let binary_path = if binary.contains('/') {
         binary.to_string()
@@ -407,93 +384,16 @@ esac
         worktree_path.display()
     );
 
-    // Spawn the process
-    let mut child = match cmd.spawn() {
-        Ok(child) => child,
-        Err(e) => {
-            error!(
-                "Failed to spawn opencode process: {} (resolved to {}): kind={:?}, os_error={:?}",
-                binary,
-                binary_path,
-                e.kind(),
-                e.raw_os_error()
-            );
-            return Err(anyhow!(
-                "Failed to spawn opencode process: {} (resolved to {}): {}",
-                binary,
-                binary_path,
-                e
-            ));
-        }
-    };
+    let output = cmd.output().await.with_context(|| {
+        format!(
+            "Failed to spawn opencode process: {} (resolved to {})",
+            binary, binary_path
+        )
+    })?;
 
-    // Take stdout and stderr handles
-    let stdout = child.stdout.take().expect("stdout was piped");
-    let stderr = child.stderr.take().expect("stderr was piped");
-
-    // Create buf readers for streaming output
-    let stdout_reader = tokio::io::BufReader::new(stdout);
-    let stderr_reader = tokio::io::BufReader::new(stderr);
-
-    // Collect output for database storage
-    let stdout_lines = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
-    let stderr_lines = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
-
-    let stdout_lines_clone = stdout_lines.clone();
-    let stderr_lines_clone = stderr_lines.clone();
-
-    // Spawn tasks to stream output to logs in real-time
-    let stdout_task = tokio::spawn(async move {
-        use tokio::io::AsyncBufReadExt;
-        let mut lines = stdout_reader.lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            info!(target: "opencode_stdout", "{}", line);
-            stdout_lines_clone.lock().await.push(line);
-        }
-    });
-
-    let stderr_task = tokio::spawn(async move {
-        use tokio::io::AsyncBufReadExt;
-        let mut lines = stderr_reader.lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            warn!(target: "opencode_stderr", "{}", line);
-            stderr_lines_clone.lock().await.push(line);
-        }
-    });
-
-    // Wait for the process to complete
-    let status = match child.wait().await {
-        Ok(status) => status,
-        Err(e) => {
-            error!("Failed to wait for opencode process: {}", e);
-            // Try to kill the process if it's still running
-            let _ = child.start_kill();
-            return Err(anyhow!("Failed to wait for opencode process: {}", e));
-        }
-    };
-
-    // Wait for output streaming tasks to complete
-    let _ = tokio::join!(stdout_task, stderr_task);
-
+    let status = output.status;
     let exit_code = status.code().unwrap_or(-1);
-
-    // Collect the output for database storage
-    let stdout_collected = stdout_lines.lock().await.join("\n");
-    let stderr_collected = stderr_lines.lock().await.join("\n");
-
-    // Save session log to database
-    let log_record = crate::db::NewSessionLog {
-        id: uuid::Uuid::new_v4().to_string(),
-        session_id: session_record_id.to_string(),
-        stdout: stdout_collected.clone(),
-        stderr: stderr_collected.clone(),
-        exit_code: Some(exit_code as i64),
-    };
-
-    if let Err(e) = crate::db::insert_session_log(db, &log_record).await {
-        error!("Failed to save session log: {}", e);
-        // Don't fail the entire operation if logging fails
-    }
+    let stderr_collected = String::from_utf8_lossy(&output.stderr).to_string();
 
     // Try to capture the opencode session ID
     let captured_session_id = if status.success() {
@@ -521,12 +421,14 @@ esac
     } else {
         error!(
             "opencode failed with exit code {}: stdout={}, stderr={}",
-            exit_code, stdout_collected, stderr_collected
+            exit_code,
+            String::from_utf8_lossy(&output.stdout),
+            stderr_collected
         );
         Err(anyhow!(
             "opencode process failed with exit code {}: stdout={}, stderr={}",
             exit_code,
-            stdout_collected,
+            String::from_utf8_lossy(&output.stdout),
             stderr_collected
         ))
     }
@@ -840,10 +742,8 @@ Error output: {}",
     );
 
     let opencode_result = run_opencode(RunOpencodeParams {
-        db,
         config,
         repo_full_name: &trigger.repo_full_name,
-        session_record_id: &session_record.id,
         derived_session_id: &session_id,
         external_opencode_session_id: external_session_id,
         agent_mode,

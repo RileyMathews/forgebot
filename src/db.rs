@@ -368,38 +368,6 @@ pub async fn update_repo_env_loader(
     Ok(())
 }
 
-/// Session log record
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionLog {
-    pub id: String,
-    pub session_id: String,
-    pub stdout: String,
-    pub stderr: String,
-    pub exit_code: Option<i64>,
-    pub created_at: String,
-}
-
-/// New session log data for insertion (without generated fields)
-#[derive(Debug, Clone)]
-pub struct NewSessionLog {
-    pub id: String,
-    pub session_id: String,
-    pub stdout: String,
-    pub stderr: String,
-    pub exit_code: Option<i64>,
-}
-
-fn map_session_log_row(row: &SqliteRow) -> SessionLog {
-    SessionLog {
-        id: row.get("id"),
-        session_id: row.get("session_id"),
-        stdout: row.get("stdout"),
-        stderr: row.get("stderr"),
-        exit_code: row.get("exit_code"),
-        created_at: row.get("created_at"),
-    }
-}
-
 /// Delete a repository by its full name
 pub async fn delete_repo(pool: &DbPool, full_name: &str) -> Result<()> {
     sqlx::query(
@@ -667,76 +635,6 @@ pub async fn remove_pending_worktree(pool: &DbPool, session_id: &str) -> Result<
     Ok(())
 }
 
-// ============================================================================
-// Session Log Operations
-// ============================================================================
-
-/// Insert a new session log
-pub async fn insert_session_log(pool: &DbPool, log: &NewSessionLog) -> Result<()> {
-    sqlx::query(
-        r#"
-        INSERT INTO session_logs (id, session_id, stdout, stderr, exit_code)
-        VALUES (?1, ?2, ?3, ?4, ?5)
-        "#,
-    )
-    .bind(&log.id)
-    .bind(&log.session_id)
-    .bind(&log.stdout)
-    .bind(&log.stderr)
-    .bind(log.exit_code)
-    .execute(pool)
-    .await
-    .with_context(|| format!("Failed to insert session log: {}", log.id))?;
-
-    debug!(
-        "Inserted session log: {} for session {}",
-        log.id, log.session_id
-    );
-    Ok(())
-}
-
-/// Get the most recent session log for a session
-pub async fn get_session_log(pool: &DbPool, session_id: &str) -> Result<Option<SessionLog>> {
-    let row = sqlx::query(
-        r#"
-        SELECT id, session_id, stdout, stderr, exit_code, created_at
-        FROM session_logs
-        WHERE session_id = ?1
-        ORDER BY created_at DESC
-        LIMIT 1
-        "#,
-    )
-    .bind(session_id)
-    .fetch_optional(pool)
-    .await
-    .with_context(|| format!("Failed to get session log for session: {}", session_id))?;
-
-    Ok(row.map(|row| map_session_log_row(&row)))
-}
-
-/// Get all session logs for a session (ordered by newest first)
-pub async fn get_session_logs(pool: &DbPool, session_id: &str) -> Result<Vec<SessionLog>> {
-    let rows = sqlx::query(
-        r#"
-        SELECT id, session_id, stdout, stderr, exit_code, created_at
-        FROM session_logs
-        WHERE session_id = ?1
-        ORDER BY created_at DESC
-        "#,
-    )
-    .bind(session_id)
-    .fetch_all(pool)
-    .await
-    .with_context(|| format!("Failed to get session logs for session: {}", session_id))?;
-
-    let logs = rows
-        .into_iter()
-        .map(|row| map_session_log_row(&row))
-        .collect();
-
-    Ok(logs)
-}
-
 /// Update a session's opencode session ID
 pub async fn update_session_opencode_id(
     pool: &DbPool,
@@ -764,20 +662,5 @@ pub async fn update_session_opencode_id(
         "Updated session opencode ID: {} -> {}",
         session_id, opencode_session_id
     );
-    Ok(())
-}
-pub async fn delete_session_logs(pool: &DbPool, session_id: &str) -> Result<()> {
-    sqlx::query(
-        r#"
-        DELETE FROM session_logs
-        WHERE session_id = ?1
-        "#,
-    )
-    .bind(session_id)
-    .execute(pool)
-    .await
-    .with_context(|| format!("Failed to delete session logs for session: {}", session_id))?;
-
-    debug!("Deleted session logs for session: {}", session_id);
     Ok(())
 }

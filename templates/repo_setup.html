@@ -42,12 +42,6 @@
             <div class="step failed">
                 <h3>Step 1: Clone Repository</h3>
                 <p><span class="status-badge status-error">✗ Failed</span> Clone failed.</p>
-                {% if clone_error.is_some() %}
-                <details class="clone-error-details">
-                    <summary>Error Details</summary>
-                    <pre>{{ clone_error.as_ref().unwrap() }}</pre>
-                </details>
-                {% endif %}
                 <form method="POST" action="/ui/repo/{{ owner }}/{{ name }}/retry-clone" class="retry-form">
                     <button type="submit" class="btn btn-primary">Retry Clone</button>
                 </form>
@@ -105,13 +99,6 @@
         </div>
         
         <button type="submit" class="btn">Save</button>
-        
-        {% if env_loader != "none" %}
-        <button type="button" class="btn btn-secondary" onclick="testEnv()" style="margin-left: 0.5rem;">
-            Test Environment
-        </button>
-        <div id="env-test-result" style="margin-top: 1rem;"></div>
-        {% endif %}
     </form>
 </div>
 
@@ -147,43 +134,4 @@
     </div>
 </div>
 
-<script>
-async function testEnv() {
-    const resultDiv = document.getElementById('env-test-result');
-    resultDiv.innerHTML = '<p>Testing environment...</p>';
-    
-    try {
-        const response = await fetch('/ui/repo/{{ owner }}/{{ name }}/test-env', {
-            method: 'POST',
-            headers: {
-                'Accept': 'application/json'
-            }
-        });
-        
-        const data = await response.json();
-        
-        if (response.ok && data.success) {
-            const keys = data.keys || [];
-            resultDiv.innerHTML = `
-                <div class="alert alert-success">
-                    <strong>Success!</strong> Loaded ${keys.length} environment variables:<br>
-                    <code>${keys.join(', ')}</code>
-                </div>
-            `;
-        } else {
-            resultDiv.innerHTML = `
-                <div class="alert alert-error">
-                    <strong>Error:</strong> ${data.error || 'Unknown error'}
-                </div>
-            `;
-        }
-    } catch (e) {
-        resultDiv.innerHTML = `
-            <div class="alert alert-error">
-                <strong>Error:</strong> ${e.message}
-            </div>
-        `;
-    }
-}
-</script>
 {% endblock %}
