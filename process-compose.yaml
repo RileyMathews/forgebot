@@ -1,6 +1,12 @@
 version: "1.0"
 
 processes:
+  prepare-runtime:
+    description: Prepare isolated local runtime directories
+    command: "bash -lc 'set -euo pipefail; runtime_root=\"$HOME/.local/state/forgebot-local-dev\"; host_xdg_data_home=\"${XDG_DATA_HOME:-$HOME/.local/share}\"; host_auth=\"$host_xdg_data_home/opencode/auth.json\"; runtime_xdg_data=\"$runtime_root/xdg/data\"; runtime_xdg_config=\"$runtime_root/xdg/config\"; runtime_xdg_cache=\"$runtime_root/xdg/cache\"; mkdir -p \"$runtime_root/worktrees\" \"$runtime_root/opencode-config\" \"$runtime_xdg_data/opencode\" \"$runtime_xdg_config/opencode\" \"$runtime_xdg_cache/bun\"; if [ ! -f \"$host_auth\" ]; then echo \"Missing opencode auth at $host_auth\"; echo \"Log into opencode once on host, then retry.\"; exit 1; fi; install -m 600 \"$host_auth\" \"$runtime_xdg_data/opencode/auth.json\"'"
+    availability:
+      restart: "exit_on_failure"
+
   build:
     description: Build the forgebot application
     command: "cargo build"
@@ -11,8 +17,10 @@ processes:
 
   run:
     description: Run the forgebot application
-    command: "cargo run"
+    command: "bash -lc 'set -euo pipefail; runtime_root=\"$HOME/.local/state/forgebot-local-dev\"; export FORGEBOT_OPENCODE_WORKTREE_BASE=\"$runtime_root/worktrees\"; export FORGEBOT_OPENCODE_CONFIG_DIR=\"$runtime_root/opencode-config\"; export FORGEBOT_DATABASE_PATH=\"$runtime_root/forgebot.db\"; export XDG_DATA_HOME=\"$runtime_root/xdg/data\"; export XDG_CONFIG_HOME=\"$runtime_root/xdg/config\"; export XDG_CACHE_HOME=\"$runtime_root/xdg/cache\"; export BUN_INSTALL_CACHE_DIR=\"$runtime_root/xdg/cache/bun\"; export OPENCODE_CONFIG_DIR=\"$runtime_root/opencode-config\"; cargo run'"
     depends_on:
+      prepare-runtime:
+        condition: process_completed_successfully
       build:
         condition: process_completed_successfully
     availability:
