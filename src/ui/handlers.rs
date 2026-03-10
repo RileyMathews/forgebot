@@ -10,14 +10,11 @@ use std::sync::Arc;
 use tracing::{error, info, warn};
 
 use crate::db::{
-    DbPool, Session, get_repo_by_full_name, list_repos, reset_clone_status_if_failed,
-    update_repo_env_loader, validate_repo_full_name,
+    get_repo_by_full_name, list_repos, reset_clone_status_if_failed, update_repo_env_loader,
+    validate_repo_full_name,
 };
 use crate::forgejo::ForgejoClient;
-use crate::session::SESSION_ACTIVE_STATES;
-use crate::session::env_loader::load_env;
 use crate::session::repo_cleanup;
-use crate::session::worktree::bare_clone_path;
 use crate::webhook::AppState;
 
 // ============================================================================
@@ -40,7 +37,6 @@ struct RepoSetupTemplate {
     default_branch: String,
     env_loader: String,
     clone_status: String,
-    clone_error: Option<String>,
     webhook_registered: bool,
     webhook_url: String,
     webhook_secret: String,
@@ -50,19 +46,6 @@ struct RepoSetupTemplate {
     config_files_exist: bool,
     message: Option<String>,
     success: bool,
-}
-
-#[derive(Template)]
-#[template(path = "sessions.html")]
-struct SessionsTemplate {
-    sessions: Vec<Session>,
-}
-
-#[derive(Template)]
-#[template(path = "session_logs.html")]
-struct SessionLogsTemplate {
-    session: Session,
-    logs: Vec<crate::db::SessionLog>,
 }
 
 // ============================================================================
@@ -76,9 +59,7 @@ struct RepoWithStatus {
     name: String,
     default_branch: String,
     clone_status: String,
-    clone_error: Option<String>,
     webhook_registered: bool,
-    session_count: i64,
 }
 
 /// Form data for adding a new repository
@@ -93,14 +74,6 @@ pub struct AddRepoForm {
 #[derive(Deserialize)]
 pub struct EnvLoaderForm {
     env_loader: String,
-}
-
-/// JSON response for environment test
-#[derive(serde::Serialize)]
-struct EnvTestResponse {
-    success: bool,
-    keys: Option<Vec<String>>,
-    error: Option<String>,
 }
 
 // ============================================================================
@@ -129,24 +102,13 @@ pub async fn dashboard(State(state): State<AppState>) -> impl IntoResponse {
         let webhook_registered =
             check_webhook_status(&state.forgejo, &repo.full_name, &state.config).await;
 
-        // Get session count
-        let session_count = match get_session_count(&state.db, &repo.full_name).await {
-            Ok(count) => count,
-            Err(e) => {
-                warn!("Failed to get session count for {}: {}", repo.full_name, e);
-                0
-            }
-        };
-
         repos_with_status.push(RepoWithStatus {
             full_name: repo.full_name.clone(),
             owner,
             name,
             default_branch: repo.default_branch,
             clone_status: repo.clone_status,
-            clone_error: repo.clone_error,
             webhook_registered,
-            session_count,
         });
     }
 
@@ -269,7 +231,6 @@ pub async fn repo_setup(
         default_branch: repo.default_branch,
         env_loader: repo.env_loader,
         clone_status: repo.clone_status,
-        clone_error: repo.clone_error,
         webhook_registered,
         webhook_url,
         webhook_secret,
@@ -357,156 +318,6 @@ pub async fn save_env_loader(
 
     // Re-render the setup page with the message
     render_repo_setup_with_message(state, owner, name, message, success).await
-}
-
-/// POST /ui/repo/:owner/:name/test-env - Test environment loading
-pub async fn test_env(
-    State(state): State<AppState>,
-    AxumPath((owner, name)): AxumPath<(String, String)>,
-) -> impl IntoResponse {
-    let full_name = format!("{}/{}", owner, name);
-
-    // Get repo from database
-    let repo = match get_repo_by_full_name(&state.db, &full_name).await {
-        Ok(Some(repo)) => repo,
-        Ok(None) => {
-            return axum::Json(EnvTestResponse {
-                success: false,
-                keys: None,
-                error: Some("Repository not found".to_string()),
-            })
-            .into_response();
-        }
-        Err(e) => {
-            return axum::Json(EnvTestResponse {
-                success: false,
-                keys: None,
-                error: Some(format!("Database error: {}", e)),
-            })
-            .into_response();
-        }
-    };
-
-    // If env_loader is none, return empty
-    if repo.env_loader == "none" {
-        return axum::Json(EnvTestResponse {
-            success: true,
-            keys: Some(vec![]),
-            error: None,
-        })
-        .into_response();
-    }
-
-    // Get the bare clone path for testing
-    let bare_clone_path = get_bare_clone_path(&state.config, &full_name);
-
-    // Run the environment loader with 30-second timeout
-    // We use the bare clone path since that's what exists during setup
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        load_env(&repo.env_loader, &bare_clone_path),
-    )
-    .await;
-
-    match result {
-        Ok(Ok(env_vars)) => {
-            // Extract only the keys, not the values (for security)
-            let keys: Vec<String> = env_vars.keys().cloned().collect();
-            axum::Json(EnvTestResponse {
-                success: true,
-                keys: Some(keys),
-                error: None,
-            })
-            .into_response()
-        }
-        Ok(Err(e)) => axum::Json(EnvTestResponse {
-            success: false,
-            keys: None,
-            error: Some(format!("Environment loading failed: {}", e)),
-        })
-        .into_response(),
-        Err(_) => axum::Json(EnvTestResponse {
-            success: false,
-            keys: None,
-            error: Some("Environment loading timed out (30s)".to_string()),
-        })
-        .into_response(),
-    }
-}
-
-/// GET /ui/sessions - List all sessions
-pub async fn sessions(State(state): State<AppState>) -> impl IntoResponse {
-    // Get all active sessions (all non-terminal states)
-    let all_sessions = match crate::db::get_sessions_in_state(
-        &state.db,
-        &SESSION_ACTIVE_STATES
-            .iter()
-            .map(|s| s.as_str())
-            .collect::<Vec<_>>(),
-    )
-    .await
-    {
-        Ok(sessions) => sessions,
-        Err(e) => {
-            error!("Failed to list sessions: {}", e);
-            return internal_error_response(format!("Failed to list sessions: {}", e));
-        }
-    };
-
-    let template = SessionsTemplate {
-        sessions: all_sessions,
-    };
-
-    match template.render() {
-        Ok(html) => Html(html).into_response(),
-        Err(e) => internal_error_response(format!("Template error: {}", e)),
-    }
-}
-
-/// GET /ui/session/:session_id/logs - View session logs
-pub async fn session_logs(
-    State(state): State<AppState>,
-    AxumPath(session_id): AxumPath<String>,
-) -> impl IntoResponse {
-    // First, get the session to verify it exists and get metadata
-    let sessions = match crate::db::get_sessions_in_state(
-        &state.db,
-        &SESSION_ACTIVE_STATES
-            .iter()
-            .map(|s| s.as_str())
-            .collect::<Vec<_>>(),
-    )
-    .await
-    {
-        Ok(sessions) => sessions,
-        Err(e) => {
-            error!("Failed to fetch sessions: {}", e);
-            return internal_error_response(format!("Failed to fetch sessions: {}", e));
-        }
-    };
-
-    let session = match sessions.iter().find(|s| s.id == session_id) {
-        Some(s) => s.clone(),
-        None => {
-            return internal_error_response(format!("Session not found: {}", session_id));
-        }
-    };
-
-    // Get the session logs
-    let logs = match crate::db::get_session_logs(&state.db, &session_id).await {
-        Ok(logs) => logs,
-        Err(e) => {
-            error!("Failed to fetch session logs: {}", e);
-            return internal_error_response(format!("Failed to fetch session logs: {}", e));
-        }
-    };
-
-    let template = SessionLogsTemplate { session, logs };
-
-    match template.render() {
-        Ok(html) => Html(html).into_response(),
-        Err(e) => internal_error_response(format!("Template error: {}", e)),
-    }
 }
 
 /// POST /ui/repo/:owner/:name/retry-clone - Retry a failed or pending clone
@@ -630,28 +441,6 @@ async fn check_webhook_status(
     }
 }
 
-/// Get the count of active sessions for a repo
-async fn get_session_count(db: &DbPool, full_name: &str) -> anyhow::Result<i64> {
-    let sessions = crate::db::get_sessions_in_state(
-        db,
-        &SESSION_ACTIVE_STATES
-            .iter()
-            .map(|s| s.as_str())
-            .collect::<Vec<_>>(),
-    )
-    .await?;
-    let count = sessions
-        .iter()
-        .filter(|s| s.repo_full_name == full_name)
-        .count() as i64;
-    Ok(count)
-}
-
-/// Get the bare clone path for a repo
-fn get_bare_clone_path(config: &Arc<crate::config::Config>, full_name: &str) -> std::path::PathBuf {
-    bare_clone_path(&config.opencode, full_name)
-}
-
 /// Render the repo setup page with a status message
 async fn render_repo_setup_with_message(
     state: AppState,
@@ -701,7 +490,6 @@ async fn render_repo_setup_with_message(
         default_branch: repo.default_branch,
         env_loader: repo.env_loader,
         clone_status: repo.clone_status,
-        clone_error: repo.clone_error,
         webhook_registered,
         webhook_url,
         webhook_secret,

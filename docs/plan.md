@@ -171,14 +171,9 @@ Operator web interface for repo management. Comes after core agent flow so the c
 - [x] Step 1: clone status — green/red, show exact `git clone --bare` command
 - [x] Step 2: webhook — show webhook URL and secret; `POST /ui/repo/:owner/:name/webhook` calls `create_repo_webhook`, redirects back
 - [x] Step 3: env loader — radio group pre-selected from DB; `POST /ui/repo/:owner/:name/env-loader` updates `repos.env_loader`, redirects back
-- [x] Step 3b: Test environment button — `POST /ui/repo/:owner/:name/test-env` runs the loader against the local clone synchronously with a 30-second timeout; returns env var key list or error output inline
 - [x] Step 4: verify — token permissions check, opencode binary found, config dir files present
 
-**Sessions (`GET /ui/sessions`)**
-- [x] Create `templates/sessions.html`
-- [x] Query all rows from `sessions`, render as table: repo, issue ID, PR ID, state, worktree path, last updated
-
-- [x] Confirm: full UI walkthrough — add a repo, register webhook, set env loader, run test-env, view sessions
+- [x] Confirm: full UI walkthrough — add a repo, register webhook, set env loader
 
 ---
 

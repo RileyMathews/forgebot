@@ -675,19 +675,11 @@ Displays step-by-step setup instructions for a single repository, with live stat
      - ( ) **direnv** — source `.envrc` via `direnv export json` *(requires `direnv` on host and `.envrc` in repo root)*
      - ( ) **Nix dev shell** — evaluate `flake.nix` via `nix print-dev-env --json` *(requires `nix` with flakes enabled on host and `flake.nix` in repo root; first run may be slow)*
    - A **Save** button that POSTs the selection and updates the `env_loader` column in the `repos` table
-   - A **Test environment** button (enabled once a loader other than `none` is saved) that runs the selected loader against the local clone immediately and returns either a list of the environment variable *keys* it found (values are not shown, as they may contain secrets) or the raw error output if the loader failed. This gives the operator confidence the loader works before triggering any agent runs.
 
 4. **Verify configuration**
    - Confirms the Forgejo API token has sufficient permissions (checks by attempting a test API call: list issues on the repo)
    - Confirms `opencode` binary is found at the configured path
    - Confirms the global opencode config directory exists and contains the expected `agents/forgebot.md`, `tools/` TypeScript files, and `package.json`
-
-**`/ui/sessions` — Active Sessions**
-
-A simple table of all rows in the `sessions` SQLite table, showing:
-
-- Repo, issue ID, PR ID (if set), current state, worktree path, last updated timestamp
-- No actions from this page in the POC — read-only
 
 ### What It Is Not
 
@@ -704,8 +696,6 @@ POST /ui/repos                             -> add repo (inserts into repos table
 GET  /ui/repo/:owner/:name                 -> per-repo setup page
 POST /ui/repo/:owner/:name/webhook         -> register webhook via Forgejo API (form action)
 POST /ui/repo/:owner/:name/env-loader      -> save env_loader selection to repos table
-POST /ui/repo/:owner/:name/test-env        -> run env loader, return key list or error output
-GET  /ui/sessions                          -> active sessions table
 ```
 
 The existing `POST /webhook` route is unchanged.

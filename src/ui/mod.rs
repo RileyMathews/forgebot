@@ -27,8 +27,6 @@ pub fn create_ui_router(state: AppState) -> Router {
             "/repo/:owner/:name/env-loader",
             post(handlers::save_env_loader),
         )
-        // Test environment (POST /ui/repo/:owner/:name/test-env)
-        .route("/repo/:owner/:name/test-env", post(handlers::test_env))
         // Retry clone (POST /ui/repo/:owner/:name/retry-clone)
         .route(
             "/repo/:owner/:name/retry-clone",
@@ -36,9 +34,5 @@ pub fn create_ui_router(state: AppState) -> Router {
         )
         // Remove repository (POST /ui/repo/:owner/:name/remove)
         .route("/repo/:owner/:name/remove", post(handlers::remove_repo))
-        // Sessions list (GET /ui/sessions)
-        .route("/sessions", get(handlers::sessions))
-        // Session logs (GET /ui/session/:session_id/logs)
-        .route("/session/:session_id/logs", get(handlers::session_logs))
         .with_state(state)
 }
