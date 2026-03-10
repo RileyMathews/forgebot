@@ -468,6 +468,22 @@ Available commands in the dev shell:
 - `cargo clippy` — Run linter
 - `sqlx migrate` — Run database migrations
 
+### Local End-to-End Testing
+
+Use `process-compose` for local E2E runs. It prepares an isolated runtime under `~/.local/state/forgebot-local-dev` and then starts the app:
+
+```bash
+process-compose up -D
+```
+
+The runtime setup step copies host opencode auth from `${XDG_DATA_HOME:-$HOME/.local/share}/opencode/auth.json` into the sandbox. This keeps local forgebot runs isolated from your normal opencode config and cache while still reusing your existing login.
+
+To clean all local test artifacts:
+
+```bash
+rm -rf "$HOME/.local/state/forgebot-local-dev"
+```
+
 ## Troubleshooting
 
 ### Common Issues

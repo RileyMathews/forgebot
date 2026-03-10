@@ -17,9 +17,7 @@ curl localhost:8080/processes
 process-compose down
 ```
 
-`build` must complete successfully before `run` starts. If the build fails, `process-compose down` is still required to clean up.
-
-```
+`prepare-runtime` and `build` must complete successfully before `run` starts. If either step fails, `process-compose down` is still required to clean up.
 
 The app itself listens on port `8765` by default (`FORGEBOT_SERVER_PORT`).
 
@@ -29,7 +27,7 @@ The app itself listens on port `8765` by default (`FORGEBOT_SERVER_PORT`).
 nix develop       # or: direnv allow
 ```
 
-Required secrets go in `.envrc.secret` (not committed). The `.envrc` sets all configurable paths to `~/.local/state/forgebot-local-dev/` automatically.
+Required secrets go in `.envrc.secret` (not committed). Runtime sandbox paths are set only by `process-compose`, so normal shell usage of `opencode` keeps using your host config.
 
 For a testing repository use the `riley/terminal-config` repository in forgejo.
 
