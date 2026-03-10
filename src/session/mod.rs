@@ -1,18 +1,10 @@
 pub mod clone;
-pub mod clone_errors;
 pub mod env_loader;
-pub mod env_loader_errors;
-pub mod errors;
 pub mod opencode;
-pub mod opencode_errors;
 pub mod repo_cleanup;
-pub mod repo_cleanup_errors;
 pub mod worktree;
-pub mod worktree_errors;
 
 use crate::forgejo::models::{Issue, IssueComment, PullRequestReviewComment};
-
-use errors::SessionError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionAction {
@@ -47,14 +39,14 @@ impl SessionAction {
 }
 
 impl std::str::FromStr for SessionAction {
-    type Err = SessionError;
+    type Err = anyhow::Error;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "plan" => Ok(Self::Plan),
             "build" => Ok(Self::Build),
             "revision" => Ok(Self::Revision),
-            _ => Err(SessionError::UnknownAction(value.to_string())),
+            _ => anyhow::bail!("Unknown session action: {}", value),
         }
     }
 }
@@ -91,7 +83,7 @@ impl CloneStatus {
 }
 
 impl std::str::FromStr for CloneStatus {
-    type Err = SessionError;
+    type Err = anyhow::Error;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
@@ -99,7 +91,7 @@ impl std::str::FromStr for CloneStatus {
             "cloning" => Ok(Self::Cloning),
             "ready" => Ok(Self::Ready),
             "failed" => Ok(Self::Failed),
-            _ => Err(SessionError::UnknownCloneStatus(value.to_string())),
+            _ => anyhow::bail!("Unknown clone status: {}", value),
         }
     }
 }
@@ -134,7 +126,7 @@ impl SessionState {
 }
 
 impl std::str::FromStr for SessionState {
-    type Err = SessionError;
+    type Err = anyhow::Error;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
@@ -144,7 +136,7 @@ impl std::str::FromStr for SessionState {
             "idle" => Ok(Self::Idle),
             "busy" => Ok(Self::Busy),
             "error" => Ok(Self::Error),
-            _ => Err(SessionError::UnknownState(value.to_string())),
+            _ => anyhow::bail!("Unknown session state: {}", value),
         }
     }
 }

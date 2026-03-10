@@ -551,12 +551,6 @@ The `forgebot.toml.example` file in the repository shows the legacy TOML configu
 
 ## Architecture Notes
 
-### Error Handling Policy
-
-The Error Refactor track uses native Rust error handling only (`Result<T, E>` with typed module-local errors, explicit boundary mapping at HTTP/process boundaries).
-
-See `docs/error-policy.md` for the full policy and migration scaffolding layout.
-
 ### Session ID Strategy
 
 Each issue receives a deterministic session ID based on the issue number and repository name:

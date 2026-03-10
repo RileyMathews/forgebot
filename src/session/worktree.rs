@@ -1,8 +1,8 @@
+use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 
 use crate::config::OpencodeConfig;
-use crate::session::worktree_errors::{Result, WorktreeError};
 
 /// Compute the path for a worktree directory.
 ///
@@ -79,7 +79,10 @@ pub async fn create_worktree(
     // Check that bare clone exists
     let bare_clone_dir = bare_clone_path(config, repo_full_name);
     if !clone_exists(config, repo_full_name) {
-        return Err(WorktreeError::BareCloneMissing(bare_clone_dir));
+        bail!(
+            "Bare clone does not exist at {}. Please clone the repository first.",
+            bare_clone_dir.display()
+        );
     }
 
     // Compute the worktree path
@@ -94,22 +97,19 @@ pub async fn create_worktree(
         // Remove the existing directory
         tokio::fs::remove_dir_all(&worktree_dir)
             .await
-            .map_err(|source| WorktreeError::Io {
-                operation: "remove existing worktree directory",
-                path: worktree_dir.clone(),
-                source,
+            .with_context(|| {
+                format!(
+                    "Failed to remove existing worktree directory: {}",
+                    worktree_dir.display()
+                )
             })?;
     }
 
     // Create parent directories if needed
     if let Some(parent) = worktree_dir.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|source| WorktreeError::Io {
-                operation: "create parent directories",
-                path: parent.to_path_buf(),
-                source,
-            })?;
+        tokio::fs::create_dir_all(parent).await.with_context(|| {
+            format!("Failed to create parent directories: {}", parent.display())
+        })?;
     }
 
     // Run git worktree add command
@@ -131,18 +131,16 @@ pub async fn create_worktree(
         .current_dir(&bare_clone_dir)
         .output()
         .await
-        .map_err(|source| WorktreeError::CommandExecution {
-            operation: "git worktree add",
-            source,
-        })?;
+        .with_context(|| "Failed to execute git worktree add command")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(WorktreeError::CommandFailed {
-            operation: "git worktree add",
-            target: format!("{} issue {}", repo_full_name, issue_id),
-            stderr: stderr.to_string(),
-        });
+        bail!(
+            "git worktree add failed for {} issue {}: {}",
+            repo_full_name,
+            issue_id,
+            stderr
+        );
     }
 
     info!(
@@ -184,18 +182,15 @@ pub async fn remove_worktree(path: &Path, bare_repo_path: &Path, git_binary: &st
         .current_dir(bare_repo_path)
         .output()
         .await
-        .map_err(|source| WorktreeError::CommandExecution {
-            operation: "git worktree remove",
-            source,
-        })?;
+        .with_context(|| "Failed to execute git worktree remove command")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(WorktreeError::CommandFailed {
-            operation: "git worktree remove",
-            target: path.display().to_string(),
-            stderr: stderr.to_string(),
-        });
+        bail!(
+            "git worktree remove failed for {}: {}",
+            path.display(),
+            stderr
+        );
     }
 
     info!("Successfully removed worktree at {}", path.display());

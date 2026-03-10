@@ -1,3 +1,4 @@
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions, SqliteRow};
 use sqlx::{Pool, Row, Sqlite};
@@ -6,28 +7,6 @@ use tracing::{debug, info};
 
 use crate::config::DatabaseConfig;
 use crate::session::{CloneStatus, SessionState};
-
-pub mod errors;
-
-use errors::{DbError, Result};
-
-fn parse_clone_status(value: String) -> Result<CloneStatus> {
-    value
-        .parse::<CloneStatus>()
-        .map_err(|source| DbError::ParseCloneStatus { value, source })
-}
-
-fn parse_session_state(value: String) -> Result<SessionState> {
-    value
-        .parse::<SessionState>()
-        .map_err(|source| DbError::ParseSessionState { value, source })
-}
-
-fn utf8_db_path(db_path: &Path) -> Result<&str> {
-    db_path
-        .to_str()
-        .ok_or_else(|| DbError::InvalidDatabasePath(db_path.to_path_buf()))
-}
 
 /// Type alias for SQLite connection pool
 pub type DbPool = Pool<Sqlite>;
@@ -82,7 +61,9 @@ pub struct PendingWorktree {
 }
 
 fn map_repo_row(row: &SqliteRow) -> Result<Repo> {
-    let clone_status = parse_clone_status(row.get::<String, _>("clone_status"))?;
+    let clone_status = row
+        .get::<String, _>("clone_status")
+        .parse::<CloneStatus>()?;
 
     Ok(Repo {
         id: row.get("id"),
@@ -99,7 +80,7 @@ fn map_repo_row(row: &SqliteRow) -> Result<Repo> {
 }
 
 fn map_session_row(row: &SqliteRow) -> Result<Session> {
-    let state = parse_session_state(row.get::<String, _>("state"))?;
+    let state = row.get::<String, _>("state").parse::<SessionState>()?;
 
     Ok(Session {
         id: row.get("id"),
@@ -128,17 +109,15 @@ pub async fn init_db(config: &DatabaseConfig) -> Result<DbPool> {
 
     // Ensure parent directory exists
     if let Some(parent) = db_path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|source| DbError::Io {
-                operation: "create directory",
-                path: parent.to_path_buf(),
-                source,
-            })?;
+        tokio::fs::create_dir_all(parent).await.with_context(|| {
+            format!("Failed to create database directory: {}", parent.display())
+        })?;
     }
 
     // Build connection options with create_if_missing
-    let db_path_str = utf8_db_path(db_path)?;
+    let db_path_str = db_path
+        .to_str()
+        .context("Invalid database path (not UTF-8)")?;
     let connect_options = SqliteConnectOptions::new()
         .filename(db_path_str)
         .create_if_missing(true);
@@ -149,17 +128,14 @@ pub async fn init_db(config: &DatabaseConfig) -> Result<DbPool> {
     let pool = SqlitePoolOptions::new()
         .connect_with(connect_options)
         .await
-        .map_err(|source| DbError::Connect {
-            path: db_path.to_path_buf(),
-            source,
-        })?;
+        .with_context(|| format!("Failed to connect to database: {}", db_path.display()))?;
 
     // Run migrations
     info!("Running database migrations...");
     sqlx::migrate!("./migrations")
         .run(&pool)
         .await
-        .map_err(DbError::from)?;
+        .context("Failed to run database migrations")?;
 
     info!(
         "Database initialized successfully at: {}",
@@ -172,16 +148,14 @@ pub async fn init_db(config: &DatabaseConfig) -> Result<DbPool> {
 pub async fn init_db_at_path(db_path: &Path) -> Result<DbPool> {
     // Ensure parent directory exists
     if let Some(parent) = db_path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|source| DbError::Io {
-                operation: "create directory",
-                path: parent.to_path_buf(),
-                source,
-            })?;
+        tokio::fs::create_dir_all(parent).await.with_context(|| {
+            format!("Failed to create database directory: {}", parent.display())
+        })?;
     }
 
-    let db_path_str = utf8_db_path(db_path)?;
+    let db_path_str = db_path
+        .to_str()
+        .context("Invalid database path (not UTF-8)")?;
     let connect_options = SqliteConnectOptions::new()
         .filename(db_path_str)
         .create_if_missing(true);
@@ -191,15 +165,12 @@ pub async fn init_db_at_path(db_path: &Path) -> Result<DbPool> {
     let pool = SqlitePoolOptions::new()
         .connect_with(connect_options)
         .await
-        .map_err(|source| DbError::Connect {
-            path: db_path.to_path_buf(),
-            source,
-        })?;
+        .with_context(|| format!("Failed to connect to database: {}", db_path.display()))?;
 
     sqlx::migrate!("./migrations")
         .run(&pool)
         .await
-        .map_err(DbError::from)?;
+        .context("Failed to run database migrations")?;
 
     info!(
         "Database initialized successfully at: {}",
@@ -232,7 +203,7 @@ pub async fn insert_repo(
     .bind(env_loader)
     .execute(pool)
     .await
-    .map_err(|source| DbError::from_query("insert repo", source))?;
+    .with_context(|| format!("Failed to insert repo: {}", full_name))?;
 
     debug!("Inserted repo: {}", full_name);
     Ok(())
@@ -251,9 +222,16 @@ pub async fn get_repo_by_full_name(pool: &DbPool, full_name: &str) -> Result<Opt
     .bind(full_name)
     .fetch_optional(pool)
     .await
-    .map_err(|source| DbError::from_query("get repo by full name", source))?;
+    .with_context(|| format!("Failed to get repo by full name: {}", full_name))?;
 
-    row.map(|row| map_repo_row(&row)).transpose()
+    row.map(|row| map_repo_row(&row))
+        .transpose()
+        .with_context(|| {
+            format!(
+                "Failed to parse repo row with full_name '{}' from database",
+                full_name
+            )
+        })
 }
 
 /// List all repositories
@@ -268,12 +246,13 @@ pub async fn list_repos(pool: &DbPool) -> Result<Vec<Repo>> {
     )
     .fetch_all(pool)
     .await
-    .map_err(|source| DbError::from_query("list repos", source))?;
+    .context("Failed to list repos")?;
 
     let repos = rows
         .into_iter()
         .map(|row| map_repo_row(&row))
-        .collect::<Result<Vec<_>>>()?;
+        .collect::<Result<Vec<_>>>()
+        .context("Failed to parse repository rows")?;
 
     Ok(repos)
 }
@@ -288,29 +267,29 @@ pub fn validate_repo_full_name(full_name: &str) -> Result<()> {
     // Check for exactly one slash
     let slash_count = full_name.chars().filter(|&c| c == '/').count();
     if slash_count != 1 {
-        return Err(DbError::InvalidRepoFullName(format!(
+        anyhow::bail!(
             "Invalid repository name '{}' - must contain exactly one '/'",
             full_name
-        )));
+        );
     }
 
     // Check each part against allowed character set
     for part in full_name.split('/') {
         if part.is_empty() {
-            return Err(DbError::InvalidRepoFullName(format!(
+            anyhow::bail!(
                 "Invalid repository name '{}' - empty owner or repository name",
                 full_name
-            )));
+            );
         }
 
         if !part
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
         {
-            return Err(DbError::InvalidRepoFullName(format!(
+            anyhow::bail!(
                 "Invalid repository name '{}' - parts must contain only alphanumeric, hyphens, and underscores",
                 full_name
-            )));
+            );
         }
     }
 
@@ -344,7 +323,7 @@ pub async fn reset_clone_status_if_failed(pool: &DbPool, full_name: &str) -> Res
     .bind(CloneStatus::Failed.as_str())
     .execute(pool)
     .await
-    .map_err(|source| DbError::from_query("reset clone status", source))?;
+    .context("failed to reset clone status")?;
 
     Ok(result.rows_affected() > 0)
 }
@@ -359,7 +338,7 @@ pub async fn update_repo_clone_status(
     let status = status.to_string();
     let parsed_status = status
         .parse::<CloneStatus>()
-        .map_err(|_| DbError::InvalidCloneStatus(status.clone()))?;
+        .with_context(|| format!("Invalid clone status '{}': expected known state", status))?;
 
     let result = sqlx::query(
         r#"
@@ -377,13 +356,10 @@ pub async fn update_repo_clone_status(
     .bind(full_name)
     .execute(pool)
     .await
-    .map_err(|source| DbError::from_query("update repo clone status", source))?;
+    .with_context(|| format!("Failed to update repo clone status: {}", full_name))?;
 
     if result.rows_affected() == 0 {
-        return Err(DbError::NotFound {
-            entity: "Repo",
-            key: full_name.to_string(),
-        });
+        anyhow::bail!("Repo not found: {}", full_name);
     }
 
     debug!(
@@ -411,13 +387,10 @@ pub async fn update_repo_env_loader(
     .bind(full_name)
     .execute(pool)
     .await
-    .map_err(|source| DbError::from_query("update repo env_loader", source))?;
+    .with_context(|| format!("Failed to update repo env_loader: {}", full_name))?;
 
     if result.rows_affected() == 0 {
-        return Err(DbError::NotFound {
-            entity: "Repo",
-            key: full_name.to_string(),
-        });
+        anyhow::bail!("Repo not found: {}", full_name);
     }
 
     debug!("Updated repo env_loader: {} -> {}", full_name, env_loader);
@@ -434,7 +407,7 @@ pub async fn delete_repo(pool: &DbPool, full_name: &str) -> Result<()> {
     .bind(full_name)
     .execute(pool)
     .await
-    .map_err(|source| DbError::from_query("delete repo", source))?;
+    .with_context(|| format!("Failed to delete repo: {}", full_name))?;
 
     debug!("Deleted repo: {}", full_name);
     Ok(())
@@ -453,12 +426,13 @@ pub async fn get_sessions_for_repo(pool: &DbPool, full_name: &str) -> Result<Vec
     .bind(full_name)
     .fetch_all(pool)
     .await
-    .map_err(|source| DbError::from_query("get sessions for repo", source))?;
+    .with_context(|| format!("Failed to get sessions for repo: {}", full_name))?;
 
     let sessions = rows
         .into_iter()
         .map(|row| map_session_row(&row))
-        .collect::<Result<Vec<_>>>()?;
+        .collect::<Result<Vec<_>>>()
+        .with_context(|| format!("Failed to parse sessions for repo: {}", full_name))?;
 
     Ok(sessions)
 }
@@ -484,7 +458,7 @@ pub async fn insert_session(pool: &DbPool, session: &NewSession) -> Result<()> {
     .bind(&session.state)
     .execute(pool)
     .await
-    .map_err(|source| DbError::from_query("insert session", source))?;
+    .with_context(|| format!("Failed to insert session: {}", session.id))?;
 
     debug!(
         "Inserted session: {} for repo {} issue {}",
@@ -511,9 +485,21 @@ pub async fn get_session_by_issue(
     .bind(issue_id)
     .fetch_optional(pool)
     .await
-    .map_err(|source| DbError::from_query("get session by issue", source))?;
+    .with_context(|| {
+        format!(
+            "Failed to get session by issue: {}#{}",
+            repo_full_name, issue_id
+        )
+    })?;
 
-    row.map(|row| map_session_row(&row)).transpose()
+    row.map(|row| map_session_row(&row))
+        .transpose()
+        .with_context(|| {
+            format!(
+                "Failed to parse session row for repo {} issue {}",
+                repo_full_name, issue_id
+            )
+        })
 }
 
 /// Get a session by PR ID
@@ -529,9 +515,11 @@ pub async fn get_session_by_pr(pool: &DbPool, pr_id: i64) -> Result<Option<Sessi
     .bind(pr_id)
     .fetch_optional(pool)
     .await
-    .map_err(|source| DbError::from_query("get session by pr", source))?;
+    .with_context(|| format!("Failed to get session by PR: {}", pr_id))?;
 
-    row.map(|row| map_session_row(&row)).transpose()
+    row.map(|row| map_session_row(&row))
+        .transpose()
+        .with_context(|| format!("Failed to parse session row for PR {}", pr_id))
 }
 
 /// Update a session's state
@@ -543,7 +531,7 @@ pub async fn update_session_state(
     let state = state.to_string();
     let parsed_state = state
         .parse::<SessionState>()
-        .map_err(|_| DbError::InvalidSessionState(state.clone()))?;
+        .with_context(|| format!("Invalid session state '{}': expected known state", state))?;
 
     let result = sqlx::query(
         r#"
@@ -556,13 +544,10 @@ pub async fn update_session_state(
     .bind(session_id)
     .execute(pool)
     .await
-    .map_err(|source| DbError::from_query("update session state", source))?;
+    .with_context(|| format!("Failed to update session state: {}", session_id))?;
 
     if result.rows_affected() == 0 {
-        return Err(DbError::NotFound {
-            entity: "Session",
-            key: session_id.to_string(),
-        });
+        anyhow::bail!("Session not found: {}", session_id);
     }
 
     debug!(
@@ -586,13 +571,10 @@ pub async fn update_session_pr_id(pool: &DbPool, session_id: &str, pr_id: i64) -
     .bind(session_id)
     .execute(pool)
     .await
-    .map_err(|source| DbError::from_query("update session pr id", source))?;
+    .with_context(|| format!("Failed to update session PR ID: {}", session_id))?;
 
     if result.rows_affected() == 0 {
-        return Err(DbError::NotFound {
-            entity: "Session",
-            key: session_id.to_string(),
-        });
+        anyhow::bail!("Session not found: {}", session_id);
     }
 
     debug!("Updated session PR ID: {} -> {}", session_id, pr_id);
@@ -626,12 +608,13 @@ pub async fn get_sessions_in_state(pool: &DbPool, states: &[SessionState]) -> Re
     let rows = query
         .fetch_all(pool)
         .await
-        .map_err(|source| DbError::from_query("get sessions by state", source))?;
+        .context("Failed to get sessions by state")?;
 
     let sessions = rows
         .into_iter()
         .map(|row| map_session_row(&row))
-        .collect::<Result<Vec<_>>>()?;
+        .collect::<Result<Vec<_>>>()
+        .context("Failed to parse sessions by state")?;
 
     Ok(sessions)
 }
@@ -656,7 +639,7 @@ pub async fn add_pending_worktree(
     .bind(worktree_path)
     .execute(pool)
     .await
-    .map_err(|source| DbError::from_query("add pending worktree", source))?;
+    .with_context(|| format!("Failed to add pending worktree: {}", worktree_path))?;
 
     debug!(
         "Added pending worktree: {} for session {}",
@@ -676,7 +659,7 @@ pub async fn list_pending_worktrees(pool: &DbPool) -> Result<Vec<PendingWorktree
     )
     .fetch_all(pool)
     .await
-    .map_err(|source| DbError::from_query("list pending worktrees", source))?;
+    .context("Failed to list pending worktrees")?;
 
     let worktrees = rows
         .into_iter()
@@ -697,7 +680,12 @@ pub async fn remove_pending_worktree(pool: &DbPool, session_id: &str) -> Result<
     .bind(session_id)
     .execute(pool)
     .await
-    .map_err(|source| DbError::from_query("remove pending worktree", source))?;
+    .with_context(|| {
+        format!(
+            "Failed to remove pending worktree for session: {}",
+            session_id
+        )
+    })?;
 
     if result.rows_affected() > 0 {
         debug!("Removed pending worktree for session: {}", session_id);
@@ -723,13 +711,10 @@ pub async fn update_session_opencode_id(
     .bind(session_id)
     .execute(pool)
     .await
-    .map_err(|source| DbError::from_query("update session opencode id", source))?;
+    .with_context(|| format!("Failed to update session opencode ID: {}", session_id))?;
 
     if result.rows_affected() == 0 {
-        return Err(DbError::NotFound {
-            entity: "Session",
-            key: session_id.to_string(),
-        });
+        anyhow::bail!("Session not found: {}", session_id);
     }
 
     debug!(
