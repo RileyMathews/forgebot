@@ -21,6 +21,149 @@ process-compose down
 
 The app itself listens on port `8765` by default (`FORGEBOT_SERVER_PORT`).
 
+### Local E2E Test Hygiene (Required)
+
+Always run local Forgejo E2E tests with a clean runtime DB and clean up test webhook state afterward.
+
+Before starting an E2E test:
+
+```bash
+process-compose down
+rm -f "$HOME/.local/state/forgebot-local-dev/forgebot.db"
+process-compose up -D
+```
+
+After finishing an E2E test:
+
+```bash
+# Stop local stack
+process-compose down
+
+# Remove local test DB
+rm -f "$HOME/.local/state/forgebot-local-dev/forgebot.db"
+```
+
+Also remove any E2E webhook entries created in Forgejo for the test repo (for example `riley/terminal-config`) so later runs do not inherit stale delivery targets.
+
+```bash
+python - <<'PY'
+import json, os, urllib.request
+
+base = os.environ['FORGEBOT_FORGEJO_URL']
+token = os.environ['FORGEBOT_FORGEJO_TOKEN']
+repo = 'riley/terminal-config'
+target_url = 'http://ds9:8765/webhook'
+
+req = urllib.request.Request(
+    f"{base}/api/v1/repos/{repo}/hooks",
+    headers={'Authorization': f'token {token}', 'Accept': 'application/json'},
+)
+with urllib.request.urlopen(req) as r:
+    hooks = json.load(r)
+
+for hook in hooks:
+    if hook.get('config', {}).get('url') == target_url:
+        delete_req = urllib.request.Request(
+            f"{base}/api/v1/repos/{repo}/hooks/{hook['id']}",
+            method='DELETE',
+            headers={'Authorization': f'token {token}', 'Accept': 'application/json'},
+        )
+        urllib.request.urlopen(delete_req).read()
+PY
+```
+
+### Local E2E Smoke Test (Issue -> PR)
+
+Use this flow to validate the full webhook-to-agent pipeline on local dev.
+
+1. Start from a clean state using the hygiene steps above.
+2. Add test repo in the UI (or via HTTP form):
+
+```bash
+curl -si -X POST http://127.0.0.1:8765/ui/repos \
+  -d "full_name=riley/terminal-config&default_branch=main&env_loader=none"
+```
+
+3. Wait for clone status to become `ready`, then register webhook:
+
+```bash
+# Check clone status
+sqlite3 "$HOME/.local/state/forgebot-local-dev/forgebot.db" \
+  "select full_name, clone_status, clone_attempts, coalesce(clone_error,'') from repos;"
+
+# Register webhook
+curl -si -X POST http://127.0.0.1:8765/ui/repo/riley/terminal-config/webhook
+```
+
+4. Create an issue in Forgejo and trigger planning/build with issue comments:
+
+```bash
+python - <<'PY'
+import json, os, time, urllib.request
+
+base = os.environ['FORGEBOT_FORGEJO_URL']
+token = os.environ['FORGEBOT_FORGEJO_TOKEN']
+repo = 'riley/terminal-config'
+headers = {
+    'Authorization': f'token {token}',
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+}
+
+issue_req = urllib.request.Request(
+    f"{base}/api/v1/repos/{repo}/issues",
+    data=json.dumps({
+        'title': f'forgebot e2e smoke {int(time.time())}',
+        'body': 'Smoke test: verify issue-to-PR flow.',
+    }).encode(),
+    method='POST',
+    headers=headers,
+)
+with urllib.request.urlopen(issue_req) as r:
+    issue = json.load(r)
+
+for body in ('@forgebot plan', '@forgebot build'):
+    comment_req = urllib.request.Request(
+        f"{base}/api/v1/repos/{repo}/issues/{issue['number']}/comments",
+        data=json.dumps({'body': body}).encode(),
+        method='POST',
+        headers=headers,
+    )
+    urllib.request.urlopen(comment_req).read()
+
+print(f"Issue: {issue['html_url']}")
+PY
+```
+
+5. Verify the session reaches `idle` and a PR is created:
+
+```bash
+# Session status in local DB
+sqlite3 "$HOME/.local/state/forgebot-local-dev/forgebot.db" \
+  "select id, repo_full_name, issue_id, state, pr_id, updated_at from sessions order by updated_at desc limit 5;"
+
+# List open PRs in test repo
+python - <<'PY'
+import json, os, urllib.request
+
+base = os.environ['FORGEBOT_FORGEJO_URL']
+token = os.environ['FORGEBOT_FORGEJO_TOKEN']
+repo = 'riley/terminal-config'
+
+req = urllib.request.Request(
+    f"{base}/api/v1/repos/{repo}/pulls?state=open&limit=10",
+    headers={'Authorization': f'token {token}', 'Accept': 'application/json'},
+)
+with urllib.request.urlopen(req) as r:
+    pulls = json.load(r)
+
+for pr in pulls:
+    print(pr['number'], pr['title'], pr['html_url'])
+PY
+```
+
+6. Always run the post-test cleanup steps from the hygiene section.
+
 ## Development Shell
 
 ```bash
