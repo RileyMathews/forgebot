@@ -17,7 +17,7 @@ use crate::session::{
     SESSION_BUSY_STATES, SessionAction, SessionState, SessionTrigger, build_prompt,
     derive_session_id,
 };
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::os::unix::fs::PermissionsExt;
@@ -510,16 +510,15 @@ pub async fn dispatch_session(
     );
 
     // 1. Fetch issue details from Forgejo
-    let issue = match forgejo
+    let issue = forgejo
         .get_issue(&trigger.repo_full_name, trigger.issue_id)
         .await
-    {
-        Ok(issue) => issue,
-        Err(e) => {
-            error!("Failed to fetch issue {}: {}", trigger.issue_id, e);
-            return Err(anyhow!("Failed to fetch issue: {}", e));
-        }
-    };
+        .with_context(|| {
+            format!(
+                "failed to fetch issue {} for repo {}",
+                trigger.issue_id, trigger.repo_full_name
+            )
+        })?;
 
     // 2. Fetch issue comments
     let issue_comments = match forgejo
@@ -572,15 +571,26 @@ pub async fn dispatch_session(
             "Session {} is busy (state: {}), posting rejection comment",
             session_id, session.state
         );
-        let _ = forgejo.post_issue_comment(
+        if let Err(e) = forgejo
+            .post_issue_comment(
                 &trigger.repo_full_name,
                 trigger.issue_id,
                 &format!(
                     "⚠️ forgebot is currently busy (state: {}). Please wait for the current operation to complete before triggering a new one.",
                     session.state
                 ),
-            ).await;
-        return Err(anyhow!("Session is busy"));
+            )
+            .await
+        {
+            warn!(
+                repo = %trigger.repo_full_name,
+                issue_id = %trigger.issue_id,
+                session_id = %session.id,
+                err = %e,
+                "Failed to post busy-state rejection comment"
+            );
+        }
+        bail!("session {} is busy in state {}", session.id, session.state);
     }
 
     // 6. Build prompt
@@ -642,7 +652,7 @@ pub async fn dispatch_session(
                 err = %error_str,
                 "Environment loading failed"
             );
-            let _ = forgejo
+            if let Err(post_err) = forgejo
                 .post_issue_comment(
                     &trigger.repo_full_name,
                     trigger.issue_id,
@@ -653,14 +663,34 @@ Error output: {}",
                         repo_record.env_loader, error_str
                     ),
                 )
-                .await;
-
-            // Set state to error if session exists
-            if let Some(ref session) = existing_session {
-                let _ = update_session_state(db, &session.id, SessionState::Error.as_str()).await;
+                .await
+            {
+                warn!(
+                    repo = %trigger.repo_full_name,
+                    issue_id = %trigger.issue_id,
+                    session_id = %session_id,
+                    err = %post_err,
+                    "Failed to post env-loader failure comment"
+                );
             }
 
-            return Err(anyhow!("Environment loading failed: {}", error_str));
+            // Set state to error if session exists
+            if let Some(ref session) = existing_session
+                && let Err(update_err) =
+                    update_session_state(db, &session.id, SessionState::Error.as_str()).await
+            {
+                error!(
+                    session_id = %session.id,
+                    err = %update_err,
+                    "Failed to set existing session to error state after env-loader failure"
+                );
+            }
+
+            bail!(
+                "environment loading failed for {}: {}",
+                trigger.repo_full_name,
+                error_str
+            );
         }
     };
 
@@ -703,9 +733,18 @@ Error output: {}",
         ),
     };
 
-    let _ = forgejo
+    if let Err(e) = forgejo
         .post_issue_comment(&trigger.repo_full_name, trigger.issue_id, &ack_msg)
-        .await;
+        .await
+    {
+        warn!(
+            repo = %trigger.repo_full_name,
+            issue_id = %trigger.issue_id,
+            session_id = %session_record.id,
+            err = %e,
+            "Failed to post acknowledgement comment"
+        );
+    }
 
     // 11. Update session state
     update_session_state(db, &session_record.id, new_state.as_str()).await?;
@@ -785,9 +824,18 @@ Error output: {}",
                 }
                 SessionAction::Revision => "✅ Review comments addressed and changes pushed.",
             };
-            let _ = forgejo
+            if let Err(e) = forgejo
                 .post_issue_comment(&trigger.repo_full_name, trigger.issue_id, success_msg)
-                .await;
+                .await
+            {
+                warn!(
+                    repo = %trigger.repo_full_name,
+                    issue_id = %trigger.issue_id,
+                    session_id = %session_record.id,
+                    err = %e,
+                    "Failed to post success comment"
+                );
+            }
 
             Ok(())
         }
@@ -804,9 +852,18 @@ Error output: {}",
                 "❌ Task failed. Error: {}\n\nSession set to error state. Please re-trigger when ready.",
                 error_str
             );
-            let _ = forgejo
+            if let Err(post_err) = forgejo
                 .post_issue_comment(&trigger.repo_full_name, trigger.issue_id, &error_msg)
-                .await;
+                .await
+            {
+                warn!(
+                    repo = %trigger.repo_full_name,
+                    issue_id = %trigger.issue_id,
+                    session_id = %session_record.id,
+                    err = %post_err,
+                    "Failed to post failure comment"
+                );
+            }
 
             Err(e)
         }
