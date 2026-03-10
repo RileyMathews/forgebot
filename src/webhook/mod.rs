@@ -252,11 +252,11 @@ pub fn create_webhook_router(state: AppState) -> Router {
 
 /// Create the combined app router (webhook + UI)
 pub fn create_app_router(state: AppState) -> Router {
-    // Create the UI router and nest it
+    // Create the UI router and merge it at root level
     let ui_router = crate::ui::create_ui_router(state.clone());
 
-    // Combine webhook and UI routers
-    create_webhook_router(state).nest("/ui", ui_router)
+    // Combine webhook and UI routers at root level
+    create_webhook_router(state).merge(ui_router)
 }
 
 /// Start the webhook server with UI routes
@@ -271,7 +271,7 @@ pub async fn start_server(state: AppState) -> Result<()> {
         .with_context(|| format!("Failed to bind to {}:{}", host, port))?;
 
     info!("Webhook server listening on {}:{}", host, port);
-    info!("UI available at http://{}:{}/ui", host, port);
+    info!("UI available at http://{}:{}/", host, port);
 
     axum::serve(listener, app).await.context("Server error")?;
 
