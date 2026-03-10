@@ -1,13 +1,13 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
 use futures::future;
 use tracing::{info, warn};
 
 use crate::config::Config;
 use crate::db::{DbPool, delete_repo, get_sessions_for_repo};
 use crate::forgejo::ForgejoClient;
+use crate::session::repo_cleanup_errors::{RepoCleanupError, Result};
 use crate::session::worktree::{bare_clone_path, remove_worktree};
 
 /// Remove a repository and all associated data.
@@ -30,25 +30,20 @@ pub async fn remove_repository(
     // a) List sessions to find which worktrees to remove
     let sessions = get_sessions_for_repo(db, full_name)
         .await
-        .with_context(|| format!("failed to list sessions for repo: {}", full_name))?;
+        .map_err(RepoCleanupError::from)?;
 
     // b) Delete webhook (required - failure aborts the removal process)
     let expected_url = format_webhook_url(config);
     let webhooks = forgejo
         .list_repo_webhooks(full_name)
         .await
-        .with_context(|| format!("failed to list webhooks for repo: {}", full_name))?;
+        .map_err(RepoCleanupError::from)?;
 
     if let Some(hook) = webhooks.iter().find(|w| w.url == expected_url) {
         forgejo
             .delete_repo_webhook(full_name, hook.id)
             .await
-            .with_context(|| {
-                format!(
-                    "failed to delete webhook {} for repo: {}",
-                    hook.id, full_name
-                )
-            })?;
+            .map_err(RepoCleanupError::from)?;
         info!(repo = %full_name, hook_id = %hook.id, "Deleted webhook");
     }
 
@@ -129,26 +124,18 @@ pub async fn remove_repository(
     // This minimizes the race condition window between the initial check and actual deletion
     let final_sessions = get_sessions_for_repo(db, full_name)
         .await
-        .with_context(|| {
-            format!(
-                "failed to check for active sessions before deletion: {}",
-                full_name
-            )
-        })?;
+        .map_err(RepoCleanupError::from)?;
 
     let has_active_sessions = final_sessions.iter().any(|s| s.state.is_busy());
 
     if has_active_sessions {
-        anyhow::bail!(
-            "cannot delete repository {}: has active sessions in planning/building/revising state",
-            full_name
-        );
+        return Err(RepoCleanupError::ActiveSessions(full_name.to_string()));
     }
 
     // f) Delete repo from DB (last step, after all cleanup succeeds)
     delete_repo(db, full_name)
         .await
-        .with_context(|| format!("failed to delete repo from database: {}", full_name))?;
+        .map_err(RepoCleanupError::from)?;
 
     info!(repo = %full_name, "Successfully removed repository from database");
 

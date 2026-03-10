@@ -1,9 +1,14 @@
 pub mod clone;
+pub mod clone_errors;
 pub mod env_loader;
+pub mod env_loader_errors;
 pub mod errors;
 pub mod opencode;
+pub mod opencode_errors;
 pub mod repo_cleanup;
+pub mod repo_cleanup_errors;
 pub mod worktree;
+pub mod worktree_errors;
 
 use crate::forgejo::models::{Issue, IssueComment, PullRequestReviewComment};
 
