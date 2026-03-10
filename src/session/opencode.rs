@@ -13,7 +13,10 @@ use crate::db::{
 use crate::forgejo::ForgejoClient;
 use crate::session::env_loader;
 use crate::session::worktree;
-use crate::session::{SessionTrigger, build_prompt, derive_session_id};
+use crate::session::{
+    SESSION_BUSY_STATES, SessionAction, SessionState, SessionTrigger, build_prompt,
+    derive_session_id,
+};
 use anyhow::{Context, Result, anyhow};
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -599,7 +602,7 @@ pub async fn dispatch_session(
 
     info!(
         session_id = %session_id,
-        agent_mode = %trigger.action,
+        agent_mode = %trigger.action.as_str(),
         repo = %trigger.repo_full_name,
         issue_id = %trigger.issue_id,
         "Dispatching session"
@@ -633,7 +636,8 @@ pub async fn dispatch_session(
     };
 
     // 3. Fetch PR review comments if in revision phase
-    let pr_review_comments = if trigger.action == "revision" && trigger.pr_id.is_some() {
+    let pr_review_comments = if trigger.action == SessionAction::Revision && trigger.pr_id.is_some()
+    {
         // Safe to unwrap: guarded by is_some() check above
         let pr_id = trigger.pr_id.unwrap();
         match forgejo
@@ -656,21 +660,11 @@ pub async fn dispatch_session(
             .await?;
 
     // 5. Determine state and check if busy
-    let new_state = match trigger.action.as_str() {
-        "plan" => "planning",
-        "build" => "building",
-        "revision" => "revising",
-        _ => {
-            error!("Unknown action: {}", trigger.action);
-            return Err(anyhow!("Unknown action: {}", trigger.action));
-        }
-    };
+    let new_state = trigger.action.state();
 
     // If session exists and is busy, reject
     if let Some(ref session) = existing_session
-        && (session.state == "planning"
-            || session.state == "building"
-            || session.state == "revising")
+        && matches!(session.state.parse::<SessionState>(), Ok(state) if state.is_busy())
     {
         info!(
             "Session {} is busy (state: {}), posting rejection comment",
@@ -689,7 +683,7 @@ pub async fn dispatch_session(
 
     // 6. Build prompt
     let prompt = build_prompt(
-        &trigger.action,
+        trigger.action,
         &issue,
         &issue_comments,
         &pr_review_comments,
@@ -761,7 +755,7 @@ Error output: {}",
 
             // Set state to error if session exists
             if let Some(ref session) = existing_session {
-                let _ = update_session_state(db, &session.id, "error").await;
+                let _ = update_session_state(db, &session.id, SessionState::Error.as_str()).await;
             }
 
             return Err(anyhow!("Environment loading failed: {}", error_str));
@@ -781,7 +775,7 @@ Error output: {}",
             pr_id: trigger.pr_id.map(|id| id as i64),
             opencode_session_id: session_id.clone(),
             worktree_path: worktree_path.display().to_string(),
-            state: "idle".to_string(),
+            state: SessionState::Idle.as_str().to_string(),
         };
         insert_session(db, &new_session).await?;
 
@@ -792,20 +786,19 @@ Error output: {}",
     }
 
     // 10. Post acknowledgement comment
-    let ack_msg = match trigger.action.as_str() {
-        "plan" => format!(
+    let ack_msg = match trigger.action {
+        SessionAction::Plan => format!(
             "🤖 forgebot is starting to work on this issue. Creating plan...\n\nSession: `{}`",
             session_id
         ),
-        "build" => format!(
+        SessionAction::Build => format!(
             "🤖 forgebot is implementing the plan. Building...\n\nSession: `{}`",
             session_id
         ),
-        "revision" => format!(
+        SessionAction::Revision => format!(
             "🤖 forgebot is addressing review comments. Revising...\n\nSession: `{}`",
             session_id
         ),
-        _ => format!("🤖 forgebot is starting work.\n\nSession: `{}`", session_id),
     };
 
     let _ = forgejo
@@ -813,15 +806,10 @@ Error output: {}",
         .await;
 
     // 11. Update session state
-    update_session_state(db, &session_record.id, new_state).await?;
+    update_session_state(db, &session_record.id, new_state.as_str()).await?;
 
     // 12. Determine agent mode
-    let agent_mode = match trigger.action.as_str() {
-        "plan" => "plan",
-        "build" => "build",
-        "revision" => "build", // revision uses build agent mode
-        _ => "build",
-    };
+    let agent_mode = trigger.action.agent_mode();
 
     // 13. Set FORGEBOT_* env vars for this session
     let mut session_env = env_extras.clone();
@@ -887,15 +875,16 @@ Error output: {}",
                 }
             }
 
-            update_session_state(db, &session_record.id, "idle").await?;
+            update_session_state(db, &session_record.id, SessionState::Idle.as_str()).await?;
 
-            let success_msg = match trigger.action.as_str() {
-                "plan" => {
+            let success_msg = match trigger.action {
+                SessionAction::Plan => {
                     "✅ Plan created successfully! Check the comments above for the plan details."
                 }
-                "build" => "✅ Implementation complete! A pull request has been created.",
-                "revision" => "✅ Review comments addressed and changes pushed.",
-                _ => "✅ Task completed successfully.",
+                SessionAction::Build => {
+                    "✅ Implementation complete! A pull request has been created."
+                }
+                SessionAction::Revision => "✅ Review comments addressed and changes pushed.",
             };
             let _ = forgejo
                 .post_issue_comment(&trigger.repo_full_name, trigger.issue_id, success_msg)
@@ -910,7 +899,7 @@ Error output: {}",
                 error = %error_str,
                 "Session failed"
             );
-            update_session_state(db, &session_record.id, "error").await?;
+            update_session_state(db, &session_record.id, SessionState::Error.as_str()).await?;
 
             let error_msg = format!(
                 "❌ Task failed. Error: {}\n\nSession set to error state. Please re-trigger when ready.",
@@ -946,7 +935,7 @@ pub async fn startup_crash_recovery(
 ) -> Result<usize> {
     info!("Running startup crash recovery...");
 
-    let stuck_states = ["planning", "building", "revising"];
+    let stuck_states: Vec<&str> = SESSION_BUSY_STATES.iter().map(|s| s.as_str()).collect();
     let stuck_sessions = match get_sessions_in_state(db, &stuck_states).await {
         Ok(sessions) => sessions,
         Err(e) => {
@@ -976,7 +965,7 @@ pub async fn startup_crash_recovery(
         );
 
         // Set state to error
-        if let Err(e) = update_session_state(db, &session.id, "error").await {
+        if let Err(e) = update_session_state(db, &session.id, SessionState::Error.as_str()).await {
             error!(
                 session_id = %session.id,
                 error = %e,
@@ -1019,41 +1008,6 @@ pub async fn startup_crash_recovery(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_derive_session_id() {
-        // Basic case
-        let id = derive_session_id("Alice/My-Repo", 42);
-        assert_eq!(id, "ses_42_alice_my_repo");
-
-        // Already lowercase
-        let id = derive_session_id("alice/myrepo", 123);
-        assert_eq!(id, "ses_123_alice_myrepo");
-
-        // With dots (should become underscores)
-        let id = derive_session_id("user/repo.name", 1);
-        assert_eq!(id, "ses_1_user_repo_name");
-
-        // With multiple special chars
-        let id = derive_session_id("My-Org/Some_Repo", 99);
-        assert_eq!(id, "ses_99_my_org_some_repo");
-
-        // With numbers
-        let id = derive_session_id("org2/repo-v1.0", 7);
-        assert_eq!(id, "ses_7_org2_repo_v1_0");
-
-        // Edge case: missing slash
-        let id = derive_session_id("just-owner", 5);
-        assert_eq!(id, "ses_5_just_owner_");
-    }
-
-    #[test]
-    fn test_sanitize_for_session_id() {
-        // Test via derive_session_id since sanitize is private
-        assert_eq!(derive_session_id("My-Repo/Test", 1), "ses_1_my_repo_test");
-        assert_eq!(derive_session_id("UPPER/LOWER", 1), "ses_1_upper_lower");
-        assert_eq!(derive_session_id("123/456", 1), "ses_1_123_456");
-    }
 
     // Note: run_opencode tests would require mocking or actual opencode binary
     // Note: dispatch_session tests would require complex mocking of db and forgejo

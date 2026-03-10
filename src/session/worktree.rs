@@ -161,7 +161,7 @@ pub async fn create_worktree(
 ///
 /// # Errors
 /// Returns an error if the git worktree remove command fails.
-pub async fn remove_worktree(path: &Path, git_binary: &str) -> Result<()> {
+pub async fn remove_worktree(path: &Path, bare_repo_path: &Path, git_binary: &str) -> Result<()> {
     // Soft failure if path doesn't exist - just log warning and return Ok
     if !path.exists() {
         warn!(
@@ -171,20 +171,15 @@ pub async fn remove_worktree(path: &Path, git_binary: &str) -> Result<()> {
         return Ok(());
     }
 
-    // Get the parent directory (the bare clone directory)
-    let parent_dir = path
-        .parent()
-        .with_context(|| format!("Worktree path has no parent: {}", path.display()))?;
-
     info!("Removing worktree at {}", path.display());
 
-    // Run git worktree remove --force command from parent directory
+    // Run git worktree remove --force from the bare clone directory.
     let output = tokio::process::Command::new(git_binary)
         .arg("worktree")
         .arg("remove")
         .arg("--force")
         .arg(path)
-        .current_dir(parent_dir)
+        .current_dir(bare_repo_path)
         .output()
         .await
         .with_context(|| "Failed to execute git worktree remove command")?;
