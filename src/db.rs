@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions, SqliteRow};
 use sqlx::{Pool, Row, Sqlite};
 use std::path::Path;
 use tracing::{debug, info};
@@ -57,6 +57,43 @@ pub struct PendingWorktree {
     pub session_id: String,
     pub worktree_path: String,
     pub scheduled_at: String,
+}
+
+fn map_repo_row(row: &SqliteRow) -> Repo {
+    Repo {
+        id: row.get("id"),
+        full_name: row.get("full_name"),
+        default_branch: row.get("default_branch"),
+        env_loader: row.get("env_loader"),
+        clone_status: row.get("clone_status"),
+        clone_error: row.get("clone_error"),
+        clone_attempts: row.get("clone_attempts"),
+        last_clone_attempt_at: row.get("last_clone_attempt_at"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }
+}
+
+fn map_session_row(row: &SqliteRow) -> Session {
+    Session {
+        id: row.get("id"),
+        repo_full_name: row.get("repo_full_name"),
+        issue_id: row.get("issue_id"),
+        pr_id: row.get("pr_id"),
+        opencode_session_id: row.get("opencode_session_id"),
+        worktree_path: row.get("worktree_path"),
+        state: row.get("state"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }
+}
+
+fn map_pending_worktree_row(row: &SqliteRow) -> PendingWorktree {
+    PendingWorktree {
+        session_id: row.get("session_id"),
+        worktree_path: row.get("worktree_path"),
+        scheduled_at: row.get("scheduled_at"),
+    }
 }
 
 /// Initialize the database pool and run migrations
@@ -180,21 +217,7 @@ pub async fn get_repo_by_full_name(pool: &DbPool, full_name: &str) -> Result<Opt
     .await
     .with_context(|| format!("Failed to get repo by full name: {}", full_name))?;
 
-    match row {
-        Some(row) => Ok(Some(Repo {
-            id: row.get("id"),
-            full_name: row.get("full_name"),
-            default_branch: row.get("default_branch"),
-            env_loader: row.get("env_loader"),
-            clone_status: row.get("clone_status"),
-            clone_error: row.get("clone_error"),
-            clone_attempts: row.get("clone_attempts"),
-            last_clone_attempt_at: row.get("last_clone_attempt_at"),
-            created_at: row.get("created_at"),
-            updated_at: row.get("updated_at"),
-        })),
-        None => Ok(None),
-    }
+    Ok(row.map(|row| map_repo_row(&row)))
 }
 
 /// List all repositories
@@ -211,21 +234,7 @@ pub async fn list_repos(pool: &DbPool) -> Result<Vec<Repo>> {
     .await
     .context("Failed to list repos")?;
 
-    let repos = rows
-        .into_iter()
-        .map(|row| Repo {
-            id: row.get("id"),
-            full_name: row.get("full_name"),
-            default_branch: row.get("default_branch"),
-            env_loader: row.get("env_loader"),
-            clone_status: row.get("clone_status"),
-            clone_error: row.get("clone_error"),
-            clone_attempts: row.get("clone_attempts"),
-            last_clone_attempt_at: row.get("last_clone_attempt_at"),
-            created_at: row.get("created_at"),
-            updated_at: row.get("updated_at"),
-        })
-        .collect();
+    let repos = rows.into_iter().map(|row| map_repo_row(&row)).collect();
 
     Ok(repos)
 }
@@ -380,6 +389,17 @@ pub struct NewSessionLog {
     pub exit_code: Option<i64>,
 }
 
+fn map_session_log_row(row: &SqliteRow) -> SessionLog {
+    SessionLog {
+        id: row.get("id"),
+        session_id: row.get("session_id"),
+        stdout: row.get("stdout"),
+        stderr: row.get("stderr"),
+        exit_code: row.get("exit_code"),
+        created_at: row.get("created_at"),
+    }
+}
+
 /// Delete a repository by its full name
 pub async fn delete_repo(pool: &DbPool, full_name: &str) -> Result<()> {
     sqlx::query(
@@ -411,20 +431,7 @@ pub async fn get_sessions_for_repo(pool: &DbPool, full_name: &str) -> Result<Vec
     .await
     .with_context(|| format!("Failed to get sessions for repo: {}", full_name))?;
 
-    let sessions = rows
-        .into_iter()
-        .map(|row| Session {
-            id: row.get("id"),
-            repo_full_name: row.get("repo_full_name"),
-            issue_id: row.get("issue_id"),
-            pr_id: row.get("pr_id"),
-            opencode_session_id: row.get("opencode_session_id"),
-            worktree_path: row.get("worktree_path"),
-            state: row.get("state"),
-            created_at: row.get("created_at"),
-            updated_at: row.get("updated_at"),
-        })
-        .collect();
+    let sessions = rows.into_iter().map(|row| map_session_row(&row)).collect();
 
     Ok(sessions)
 }
@@ -484,20 +491,7 @@ pub async fn get_session_by_issue(
         )
     })?;
 
-    match row {
-        Some(row) => Ok(Some(Session {
-            id: row.get("id"),
-            repo_full_name: row.get("repo_full_name"),
-            issue_id: row.get("issue_id"),
-            pr_id: row.get("pr_id"),
-            opencode_session_id: row.get("opencode_session_id"),
-            worktree_path: row.get("worktree_path"),
-            state: row.get("state"),
-            created_at: row.get("created_at"),
-            updated_at: row.get("updated_at"),
-        })),
-        None => Ok(None),
-    }
+    Ok(row.map(|row| map_session_row(&row)))
 }
 
 /// Get a session by PR ID
@@ -515,20 +509,7 @@ pub async fn get_session_by_pr(pool: &DbPool, pr_id: i64) -> Result<Option<Sessi
     .await
     .with_context(|| format!("Failed to get session by PR: {}", pr_id))?;
 
-    match row {
-        Some(row) => Ok(Some(Session {
-            id: row.get("id"),
-            repo_full_name: row.get("repo_full_name"),
-            issue_id: row.get("issue_id"),
-            pr_id: row.get("pr_id"),
-            opencode_session_id: row.get("opencode_session_id"),
-            worktree_path: row.get("worktree_path"),
-            state: row.get("state"),
-            created_at: row.get("created_at"),
-            updated_at: row.get("updated_at"),
-        })),
-        None => Ok(None),
-    }
+    Ok(row.map(|row| map_session_row(&row)))
 }
 
 /// Update a session's state
@@ -606,20 +587,7 @@ pub async fn get_sessions_in_state(pool: &DbPool, states: &[&str]) -> Result<Vec
         .await
         .context("Failed to get sessions by state")?;
 
-    let sessions = rows
-        .into_iter()
-        .map(|row| Session {
-            id: row.get("id"),
-            repo_full_name: row.get("repo_full_name"),
-            issue_id: row.get("issue_id"),
-            pr_id: row.get("pr_id"),
-            opencode_session_id: row.get("opencode_session_id"),
-            worktree_path: row.get("worktree_path"),
-            state: row.get("state"),
-            created_at: row.get("created_at"),
-            updated_at: row.get("updated_at"),
-        })
-        .collect();
+    let sessions = rows.into_iter().map(|row| map_session_row(&row)).collect();
 
     Ok(sessions)
 }
@@ -668,11 +636,7 @@ pub async fn list_pending_worktrees(pool: &DbPool) -> Result<Vec<PendingWorktree
 
     let worktrees = rows
         .into_iter()
-        .map(|row| PendingWorktree {
-            session_id: row.get("session_id"),
-            worktree_path: row.get("worktree_path"),
-            scheduled_at: row.get("scheduled_at"),
-        })
+        .map(|row| map_pending_worktree_row(&row))
         .collect();
 
     Ok(worktrees)
@@ -747,17 +711,7 @@ pub async fn get_session_log(pool: &DbPool, session_id: &str) -> Result<Option<S
     .await
     .with_context(|| format!("Failed to get session log for session: {}", session_id))?;
 
-    match row {
-        Some(row) => Ok(Some(SessionLog {
-            id: row.get("id"),
-            session_id: row.get("session_id"),
-            stdout: row.get("stdout"),
-            stderr: row.get("stderr"),
-            exit_code: row.get("exit_code"),
-            created_at: row.get("created_at"),
-        })),
-        None => Ok(None),
-    }
+    Ok(row.map(|row| map_session_log_row(&row)))
 }
 
 /// Get all session logs for a session (ordered by newest first)
@@ -777,14 +731,7 @@ pub async fn get_session_logs(pool: &DbPool, session_id: &str) -> Result<Vec<Ses
 
     let logs = rows
         .into_iter()
-        .map(|row| SessionLog {
-            id: row.get("id"),
-            session_id: row.get("session_id"),
-            stdout: row.get("stdout"),
-            stderr: row.get("stderr"),
-            exit_code: row.get("exit_code"),
-            created_at: row.get("created_at"),
-        })
+        .map(|row| map_session_log_row(&row))
         .collect();
 
     Ok(logs)
