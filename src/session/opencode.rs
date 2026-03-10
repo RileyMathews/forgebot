@@ -12,13 +12,12 @@ use crate::db::{
 };
 use crate::forgejo::ForgejoClient;
 use crate::session::env_loader;
-use crate::session::env_loader_errors::EnvLoaderError;
-use crate::session::opencode_errors::{OpencodeError, Result};
 use crate::session::worktree;
 use crate::session::{
     SESSION_BUSY_STATES, SessionAction, SessionState, SessionTrigger, build_prompt,
     derive_session_id,
 };
+use anyhow::{Context, Result, anyhow, bail};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::os::unix::fs::PermissionsExt;
@@ -54,27 +53,26 @@ pub fn setup_opencode_config_dir(config: &OpencodeConfig) -> Result<()> {
     );
 
     // Create the main config directory
-    std::fs::create_dir_all(config_dir).map_err(|source| OpencodeError::Io {
-        operation: "create config directory",
-        path: config_dir.clone(),
-        source,
+    std::fs::create_dir_all(config_dir).with_context(|| {
+        format!(
+            "Failed to create config directory: {}",
+            config_dir.display()
+        )
     })?;
 
     // Create subdirectories
     let agents_dir = config_dir.join("agents");
     let tools_dir = config_dir.join("tools");
 
-    std::fs::create_dir_all(&agents_dir).map_err(|source| OpencodeError::Io {
-        operation: "create agents directory",
-        path: agents_dir.clone(),
-        source,
+    std::fs::create_dir_all(&agents_dir).with_context(|| {
+        format!(
+            "Failed to create agents directory: {}",
+            agents_dir.display()
+        )
     })?;
 
-    std::fs::create_dir_all(&tools_dir).map_err(|source| OpencodeError::Io {
-        operation: "create tools directory",
-        path: tools_dir.clone(),
-        source,
-    })?;
+    std::fs::create_dir_all(&tools_dir)
+        .with_context(|| format!("Failed to create tools directory: {}", tools_dir.display()))?;
 
     // Define template files to write
     let files_to_write = [
@@ -107,10 +105,12 @@ pub fn setup_opencode_config_dir(config: &OpencodeConfig) -> Result<()> {
 
     // Write each managed file, overwriting any existing content
     for (path, content, name) in &files_to_write {
-        std::fs::write(path, content).map_err(|source| OpencodeError::Io {
-            operation: "write opencode config file",
-            path: path.clone(),
-            source,
+        std::fs::write(path, content).with_context(|| {
+            format!(
+                "Failed to write opencode config file: {} at {}",
+                name,
+                path.display()
+            )
         })?;
         info!("Wrote opencode config file: {}", name);
     }
@@ -245,10 +245,11 @@ pub async fn run_opencode(params: RunOpencodeParams<'_>) -> Result<Option<String
     // returns bot username for username prompts and token for password prompts.
     let askpass_path = std::env::temp_dir().join("forgebot-git-askpass.sh");
     if let Some(parent) = askpass_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|source| OpencodeError::Io {
-            operation: "create directory for git askpass script",
-            path: parent.to_path_buf(),
-            source,
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create directory for git askpass script at {}",
+                parent.display()
+            )
         })?;
     }
     std::fs::write(
@@ -265,16 +266,18 @@ case "$prompt" in
 esac
 "#,
     )
-    .map_err(|source| OpencodeError::Io {
-        operation: "write git askpass script",
-        path: askpass_path.clone(),
-        source,
+    .with_context(|| {
+        format!(
+            "failed to write git askpass script at {}",
+            askpass_path.display()
+        )
     })?;
-    std::fs::set_permissions(&askpass_path, std::fs::Permissions::from_mode(0o700)).map_err(
-        |source| OpencodeError::Io {
-            operation: "set executable permissions",
-            path: askpass_path.clone(),
-            source,
+    std::fs::set_permissions(&askpass_path, std::fs::Permissions::from_mode(0o700)).with_context(
+        || {
+            format!(
+                "failed to set executable permissions on {}",
+                askpass_path.display()
+            )
         },
     )?;
 
@@ -335,10 +338,11 @@ esac
     // Ensure worktree directory exists
     if !worktree_path.exists() {
         info!("Creating worktree directory: {}", worktree_path.display());
-        std::fs::create_dir_all(worktree_path).map_err(|source| OpencodeError::Io {
-            operation: "create worktree directory",
-            path: worktree_path.to_path_buf(),
-            source,
+        std::fs::create_dir_all(worktree_path).with_context(|| {
+            format!(
+                "Failed to create worktree directory: {}",
+                worktree_path.display()
+            )
         })?;
     }
 
@@ -380,10 +384,11 @@ esac
         worktree_path.display()
     );
 
-    let output = cmd.output().await.map_err(|source| OpencodeError::Spawn {
-        binary: binary.to_string(),
-        resolved_path: binary_path.clone(),
-        source,
+    let output = cmd.output().await.with_context(|| {
+        format!(
+            "Failed to spawn opencode process: {} (resolved to {})",
+            binary, binary_path
+        )
     })?;
 
     let status = output.status;
@@ -420,11 +425,12 @@ esac
             String::from_utf8_lossy(&output.stdout),
             stderr_collected
         );
-        Err(OpencodeError::ProcessFailed {
+        Err(anyhow!(
+            "opencode process failed with exit code {}: stdout={}, stderr={}",
             exit_code,
-            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-            stderr: stderr_collected,
-        })
+            String::from_utf8_lossy(&output.stdout),
+            stderr_collected
+        ))
     }
 }
 
@@ -441,15 +447,11 @@ async fn capture_opencode_session_id(binary: &str, title: &str) -> Result<Option
         .arg("5") // Get 5 most recent sessions
         .output()
         .await
-        .map_err(|source| OpencodeError::Spawn {
-            binary: binary.to_string(),
-            resolved_path: binary.to_string(),
-            source,
-        })?;
+        .context("Failed to run opencode session list")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(OpencodeError::SessionListFailed(stderr.to_string()));
+        anyhow::bail!("opencode session list failed: {}", stderr);
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -471,10 +473,9 @@ async fn capture_opencode_session_id(binary: &str, title: &str) -> Result<Option
             }
             Ok(None)
         }
-        Err(source) => Err(OpencodeError::SessionListParse {
-            source,
-            output: stdout.to_string(),
-        }),
+        Err(e) => {
+            anyhow::bail!("Failed to parse opencode session list JSON: {}", e)
+        }
     }
 }
 
@@ -511,7 +512,13 @@ pub async fn dispatch_session(
     // 1. Fetch issue details from Forgejo
     let issue = forgejo
         .get_issue(&trigger.repo_full_name, trigger.issue_id)
-        .await?;
+        .await
+        .with_context(|| {
+            format!(
+                "failed to fetch issue {} for repo {}",
+                trigger.issue_id, trigger.repo_full_name
+            )
+        })?;
 
     // 2. Fetch issue comments
     let issue_comments = match forgejo
@@ -583,10 +590,7 @@ pub async fn dispatch_session(
                 "Failed to post busy-state rejection comment"
             );
         }
-        return Err(OpencodeError::SessionBusy {
-            session_id: session.id.clone(),
-            state: session.state.to_string(),
-        });
+        bail!("session {} is busy in state {}", session.id, session.state);
     }
 
     // 6. Build prompt
@@ -601,7 +605,12 @@ pub async fn dispatch_session(
     // 7. Look up repository metadata and get/create worktree
     let repo_record = crate::db::get_repo_by_full_name(db, &trigger.repo_full_name)
         .await?
-        .ok_or_else(|| OpencodeError::MissingRepository(trigger.repo_full_name.clone()))?;
+        .ok_or_else(|| {
+            anyhow!(
+                "Repository {} not found in database",
+                trigger.repo_full_name
+            )
+        })?;
 
     let worktree_path =
         worktree::worktree_path(&config.opencode, &trigger.repo_full_name, trigger.issue_id);
@@ -620,7 +629,13 @@ pub async fn dispatch_session(
             trigger.issue_id,
             &repo_record.default_branch,
         )
-        .await?;
+        .await
+        .with_context(|| {
+            format!(
+                "failed to create worktree for {} issue {}",
+                trigger.repo_full_name, trigger.issue_id
+            )
+        })?;
     }
 
     // 8. Load environment in the worktree using the repository's configured loader.
@@ -671,11 +686,11 @@ Error output: {}",
                 );
             }
 
-            return Err(OpencodeError::EnvLoader(EnvLoaderError::CommandFailed {
-                command: "env loader",
-                exit_code: None,
-                stderr: format!("{}: {}", trigger.repo_full_name, error_str),
-            }));
+            bail!(
+                "environment loading failed for {}: {}",
+                trigger.repo_full_name,
+                error_str
+            );
         }
     };
 
@@ -699,9 +714,7 @@ Error output: {}",
         session_record =
             crate::db::get_session_by_issue(db, &trigger.repo_full_name, trigger.issue_id as i64)
                 .await?
-                .ok_or_else(|| {
-                    OpencodeError::MissingCreatedSession(trigger.repo_full_name.clone())
-                })?;
+                .ok_or_else(|| anyhow!("Failed to retrieve newly created session"))?;
     }
 
     // 10. Post acknowledgement comment

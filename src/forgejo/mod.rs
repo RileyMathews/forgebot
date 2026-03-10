@@ -1,10 +1,9 @@
-pub mod errors;
 pub mod models;
 
+use anyhow::{Context, Result};
 use reqwest::Client;
 use tracing::{debug, error};
 
-use errors::{ForgejoError, Result};
 use models::*;
 
 /// HTTP client for the Forgejo API
@@ -22,7 +21,7 @@ impl ForgejoClient {
         let client = Client::builder()
             .user_agent("forgebot")
             .build()
-            .map_err(ForgejoError::BuildClient)?;
+            .context("Failed to build HTTP client")?;
 
         // Ensure base_url doesn't have trailing slash
         let base_url = base_url.trim_end_matches('/').to_string();
@@ -51,33 +50,6 @@ impl ForgejoClient {
         format!("{}{}", self.base_url, path)
     }
 
-    async fn parse_json<T>(response: reqwest::Response, operation: &'static str) -> Result<T>
-    where
-        T: serde::de::DeserializeOwned,
-    {
-        response
-            .json()
-            .await
-            .map_err(|source| ForgejoError::Parse { operation, source })
-    }
-
-    async fn checked_response(
-        response: reqwest::Response,
-        operation: &'static str,
-        resource: String,
-    ) -> Result<reqwest::Response> {
-        let status = response.status();
-        if status.is_success() {
-            return Ok(response);
-        }
-
-        let body = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "<could not read body>".to_string());
-        Err(ForgejoError::from_status(operation, resource, status, body))
-    }
-
     /// GET an issue by ID
     pub async fn get_issue(&self, repo: &str, issue_id: u64) -> Result<Issue> {
         let url = self.api_url(&format!("/api/v1/repos/{}/issues/{}", repo, issue_id));
@@ -89,18 +61,28 @@ impl ForgejoClient {
             .header("Authorization", self.auth_header())
             .send()
             .await
-            .map_err(|source| ForgejoError::Transport {
-                operation: "get issue",
-                source,
+            .with_context(|| {
+                format!("Failed to send request to get issue {}/{}", repo, issue_id)
             })?;
 
-        let response = Self::checked_response(
-            response,
-            "get issue",
-            format!("{}/issues/{}", repo, issue_id),
-        )
-        .await?;
-        let issue = Self::parse_json(response, "parse get issue response").await?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<could not read body>".to_string());
+            anyhow::bail!(
+                "Failed to get issue: {} {} - {}",
+                status.as_u16(),
+                status.canonical_reason().unwrap_or("Unknown"),
+                body
+            );
+        }
+
+        let issue: Issue = response
+            .json()
+            .await
+            .with_context(|| format!("Failed to parse issue response for {}/{}", repo, issue_id))?;
 
         Ok(issue)
     }
@@ -123,18 +105,33 @@ impl ForgejoClient {
             .header("Authorization", self.auth_header())
             .send()
             .await
-            .map_err(|source| ForgejoError::Transport {
-                operation: "list issue comments",
-                source,
+            .with_context(|| {
+                format!(
+                    "Failed to send request to list issue comments {}/{}",
+                    repo, issue_id
+                )
             })?;
 
-        let response = Self::checked_response(
-            response,
-            "list issue comments",
-            format!("{}/issues/{}/comments", repo, issue_id),
-        )
-        .await?;
-        let comments = Self::parse_json(response, "parse issue comments response").await?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<could not read body>".to_string());
+            anyhow::bail!(
+                "Failed to list issue comments: {} {} - {}",
+                status.as_u16(),
+                status.canonical_reason().unwrap_or("Unknown"),
+                body
+            );
+        }
+
+        let comments: Vec<IssueComment> = response.json().await.with_context(|| {
+            format!(
+                "Failed to parse issue comments response for {}/{}",
+                repo, issue_id
+            )
+        })?;
 
         Ok(comments)
     }
@@ -154,18 +151,33 @@ impl ForgejoClient {
             .header("Authorization", self.auth_header())
             .send()
             .await
-            .map_err(|source| ForgejoError::Transport {
-                operation: "list pr review comments",
-                source,
+            .with_context(|| {
+                format!(
+                    "Failed to send request to list PR review comments {}/{}",
+                    repo, pr_id
+                )
             })?;
 
-        let response = Self::checked_response(
-            response,
-            "list pr review comments",
-            format!("{}/pulls/{}/comments", repo, pr_id),
-        )
-        .await?;
-        let comments = Self::parse_json(response, "parse pr review comments response").await?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<could not read body>".to_string());
+            anyhow::bail!(
+                "Failed to list PR review comments: {} {} - {}",
+                status.as_u16(),
+                status.canonical_reason().unwrap_or("Unknown"),
+                body
+            );
+        }
+
+        let comments: Vec<PullRequestReviewComment> = response.json().await.with_context(|| {
+            format!(
+                "Failed to parse PR review comments response for {}/{}",
+                repo, pr_id
+            )
+        })?;
 
         Ok(comments)
     }
@@ -194,18 +206,33 @@ impl ForgejoClient {
             .json(&payload)
             .send()
             .await
-            .map_err(|source| ForgejoError::Transport {
-                operation: "post issue comment",
-                source,
+            .with_context(|| {
+                format!(
+                    "Failed to send request to post issue comment {}/{}",
+                    repo, issue_id
+                )
             })?;
 
-        let response = Self::checked_response(
-            response,
-            "post issue comment",
-            format!("{}/issues/{}/comments", repo, issue_id),
-        )
-        .await?;
-        let comment = Self::parse_json(response, "parse issue comment response").await?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<could not read body>".to_string());
+            anyhow::bail!(
+                "Failed to post issue comment: {} {} - {}",
+                status.as_u16(),
+                status.canonical_reason().unwrap_or("Unknown"),
+                body
+            );
+        }
+
+        let comment: IssueComment = response.json().await.with_context(|| {
+            format!(
+                "Failed to parse issue comment response for {}/{}",
+                repo, issue_id
+            )
+        })?;
 
         Ok(comment)
     }
@@ -232,14 +259,26 @@ impl ForgejoClient {
             .header("Authorization", self.auth_header())
             .send()
             .await
-            .map_err(|source| ForgejoError::Transport {
-                operation: "list webhooks",
-                source,
-            })?;
+            .with_context(|| format!("Failed to send request to list webhooks for {}", repo))?;
 
-        let response =
-            Self::checked_response(response, "list webhooks", format!("{}/hooks", repo)).await?;
-        let webhooks = Self::parse_json(response, "parse webhooks response").await?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<could not read body>".to_string());
+            anyhow::bail!(
+                "Failed to list webhooks: {} {} - {}",
+                status.as_u16(),
+                status.canonical_reason().unwrap_or("Unknown"),
+                body
+            );
+        }
+
+        let webhooks: Vec<Webhook> = response
+            .json()
+            .await
+            .with_context(|| format!("Failed to parse webhooks response for {}", repo))?;
 
         Ok(webhooks)
     }
@@ -276,14 +315,26 @@ impl ForgejoClient {
             .json(&payload)
             .send()
             .await
-            .map_err(|source| ForgejoError::Transport {
-                operation: "create webhook",
-                source,
-            })?;
+            .with_context(|| format!("Failed to send request to create webhook for {}", repo))?;
 
-        let response =
-            Self::checked_response(response, "create webhook", format!("{}/hooks", repo)).await?;
-        let webhook = Self::parse_json(response, "parse webhook creation response").await?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<could not read body>".to_string());
+            anyhow::bail!(
+                "Failed to create webhook: {} {} - {}",
+                status.as_u16(),
+                status.canonical_reason().unwrap_or("Unknown"),
+                body
+            );
+        }
+
+        let webhook: Webhook = response
+            .json()
+            .await
+            .with_context(|| format!("Failed to parse webhook creation response for {}", repo))?;
 
         Ok(webhook)
     }
@@ -299,9 +350,11 @@ impl ForgejoClient {
             .header("Authorization", self.auth_header())
             .send()
             .await
-            .map_err(|source| ForgejoError::Transport {
-                operation: "delete webhook",
-                source,
+            .with_context(|| {
+                format!(
+                    "Failed to send request to delete webhook {} for {}",
+                    hook_id, repo
+                )
             })?;
 
         let status = response.status();
@@ -320,12 +373,12 @@ impl ForgejoClient {
                 .text()
                 .await
                 .unwrap_or_else(|_| "<could not read body>".to_string());
-            return Err(ForgejoError::from_status(
-                "delete webhook",
-                format!("{}/hooks/{}", repo, hook_id),
-                status,
-                body,
-            ));
+            anyhow::bail!(
+                "Failed to delete webhook: {} {} - {}",
+                status.as_u16(),
+                status.canonical_reason().unwrap_or("Unknown"),
+                body
+            );
         }
 
         Ok(())
