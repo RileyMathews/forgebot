@@ -6,6 +6,7 @@ use std::path::Path;
 use tracing::{debug, info};
 
 use crate::config::DatabaseConfig;
+use crate::session::{CloneStatus, SessionState};
 
 /// Type alias for SQLite connection pool
 pub type DbPool = Pool<Sqlite>;
@@ -17,7 +18,7 @@ pub struct Repo {
     pub full_name: String,
     pub default_branch: String,
     pub env_loader: String,
-    pub clone_status: String,
+    pub clone_status: CloneStatus,
     pub clone_error: Option<String>,
     pub clone_attempts: i64,
     pub last_clone_attempt_at: Option<String>,
@@ -34,7 +35,7 @@ pub struct Session {
     pub pr_id: Option<i64>,
     pub opencode_session_id: String,
     pub worktree_path: String,
-    pub state: String,
+    pub state: SessionState,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -59,33 +60,39 @@ pub struct PendingWorktree {
     pub scheduled_at: String,
 }
 
-fn map_repo_row(row: &SqliteRow) -> Repo {
-    Repo {
+fn map_repo_row(row: &SqliteRow) -> Result<Repo> {
+    let clone_status = row
+        .get::<String, _>("clone_status")
+        .parse::<CloneStatus>()?;
+
+    Ok(Repo {
         id: row.get("id"),
         full_name: row.get("full_name"),
         default_branch: row.get("default_branch"),
         env_loader: row.get("env_loader"),
-        clone_status: row.get("clone_status"),
+        clone_status,
         clone_error: row.get("clone_error"),
         clone_attempts: row.get("clone_attempts"),
         last_clone_attempt_at: row.get("last_clone_attempt_at"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
-    }
+    })
 }
 
-fn map_session_row(row: &SqliteRow) -> Session {
-    Session {
+fn map_session_row(row: &SqliteRow) -> Result<Session> {
+    let state = row.get::<String, _>("state").parse::<SessionState>()?;
+
+    Ok(Session {
         id: row.get("id"),
         repo_full_name: row.get("repo_full_name"),
         issue_id: row.get("issue_id"),
         pr_id: row.get("pr_id"),
         opencode_session_id: row.get("opencode_session_id"),
         worktree_path: row.get("worktree_path"),
-        state: row.get("state"),
+        state,
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
-    }
+    })
 }
 
 fn map_pending_worktree_row(row: &SqliteRow) -> PendingWorktree {
@@ -217,7 +224,14 @@ pub async fn get_repo_by_full_name(pool: &DbPool, full_name: &str) -> Result<Opt
     .await
     .with_context(|| format!("Failed to get repo by full name: {}", full_name))?;
 
-    Ok(row.map(|row| map_repo_row(&row)))
+    row.map(|row| map_repo_row(&row))
+        .transpose()
+        .with_context(|| {
+            format!(
+                "Failed to parse repo row with full_name '{}' from database",
+                full_name
+            )
+        })
 }
 
 /// List all repositories
@@ -234,7 +248,11 @@ pub async fn list_repos(pool: &DbPool) -> Result<Vec<Repo>> {
     .await
     .context("Failed to list repos")?;
 
-    let repos = rows.into_iter().map(|row| map_repo_row(&row)).collect();
+    let repos = rows
+        .into_iter()
+        .map(|row| map_repo_row(&row))
+        .collect::<Result<Vec<_>>>()
+        .context("Failed to parse repository rows")?;
 
     Ok(repos)
 }
@@ -292,15 +310,17 @@ pub async fn reset_clone_status_if_failed(pool: &DbPool, full_name: &str) -> Res
     let result = sqlx::query(
         r#"
         UPDATE repos 
-        SET clone_status = 'pending', 
+        SET clone_status = ?1,
             clone_error = NULL,
             clone_attempts = clone_attempts + 1, 
             last_clone_attempt_at = datetime('now'),
             updated_at = datetime('now')
-        WHERE full_name = ?1 AND clone_status = 'failed'
+        WHERE full_name = ?2 AND clone_status = ?3
         "#,
     )
+    .bind(CloneStatus::Pending.as_str())
     .bind(full_name)
+    .bind(CloneStatus::Failed.as_str())
     .execute(pool)
     .await
     .context("failed to reset clone status")?;
@@ -312,9 +332,14 @@ pub async fn reset_clone_status_if_failed(pool: &DbPool, full_name: &str) -> Res
 pub async fn update_repo_clone_status(
     pool: &DbPool,
     full_name: &str,
-    status: &str,
+    status: impl ToString,
     error: Option<&str>,
 ) -> Result<()> {
+    let status = status.to_string();
+    let parsed_status = status
+        .parse::<CloneStatus>()
+        .with_context(|| format!("Invalid clone status '{}': expected known state", status))?;
+
     let result = sqlx::query(
         r#"
         UPDATE repos
@@ -326,7 +351,7 @@ pub async fn update_repo_clone_status(
         WHERE full_name = ?3
         "#,
     )
-    .bind(status)
+    .bind(parsed_status.as_str())
     .bind(error)
     .bind(full_name)
     .execute(pool)
@@ -337,7 +362,11 @@ pub async fn update_repo_clone_status(
         anyhow::bail!("Repo not found: {}", full_name);
     }
 
-    debug!("Updated repo clone status: {} -> {}", full_name, status);
+    debug!(
+        "Updated repo clone status: {} -> {}",
+        full_name,
+        parsed_status.as_str()
+    );
     Ok(())
 }
 
@@ -399,7 +428,11 @@ pub async fn get_sessions_for_repo(pool: &DbPool, full_name: &str) -> Result<Vec
     .await
     .with_context(|| format!("Failed to get sessions for repo: {}", full_name))?;
 
-    let sessions = rows.into_iter().map(|row| map_session_row(&row)).collect();
+    let sessions = rows
+        .into_iter()
+        .map(|row| map_session_row(&row))
+        .collect::<Result<Vec<_>>>()
+        .with_context(|| format!("Failed to parse sessions for repo: {}", full_name))?;
 
     Ok(sessions)
 }
@@ -459,7 +492,14 @@ pub async fn get_session_by_issue(
         )
     })?;
 
-    Ok(row.map(|row| map_session_row(&row)))
+    row.map(|row| map_session_row(&row))
+        .transpose()
+        .with_context(|| {
+            format!(
+                "Failed to parse session row for repo {} issue {}",
+                repo_full_name, issue_id
+            )
+        })
 }
 
 /// Get a session by PR ID
@@ -477,11 +517,22 @@ pub async fn get_session_by_pr(pool: &DbPool, pr_id: i64) -> Result<Option<Sessi
     .await
     .with_context(|| format!("Failed to get session by PR: {}", pr_id))?;
 
-    Ok(row.map(|row| map_session_row(&row)))
+    row.map(|row| map_session_row(&row))
+        .transpose()
+        .with_context(|| format!("Failed to parse session row for PR {}", pr_id))
 }
 
 /// Update a session's state
-pub async fn update_session_state(pool: &DbPool, session_id: &str, state: &str) -> Result<()> {
+pub async fn update_session_state(
+    pool: &DbPool,
+    session_id: &str,
+    state: impl ToString,
+) -> Result<()> {
+    let state = state.to_string();
+    let parsed_state = state
+        .parse::<SessionState>()
+        .with_context(|| format!("Invalid session state '{}': expected known state", state))?;
+
     let result = sqlx::query(
         r#"
         UPDATE sessions
@@ -489,7 +540,7 @@ pub async fn update_session_state(pool: &DbPool, session_id: &str, state: &str) 
         WHERE id = ?2
         "#,
     )
-    .bind(state)
+    .bind(parsed_state.as_str())
     .bind(session_id)
     .execute(pool)
     .await
@@ -499,7 +550,11 @@ pub async fn update_session_state(pool: &DbPool, session_id: &str, state: &str) 
         anyhow::bail!("Session not found: {}", session_id);
     }
 
-    debug!("Updated session state: {} -> {}", session_id, state);
+    debug!(
+        "Updated session state: {} -> {}",
+        session_id,
+        parsed_state.as_str()
+    );
     Ok(())
 }
 
@@ -527,7 +582,7 @@ pub async fn update_session_pr_id(pool: &DbPool, session_id: &str, pr_id: i64) -
 }
 
 /// Get all sessions in the specified states
-pub async fn get_sessions_in_state(pool: &DbPool, states: &[&str]) -> Result<Vec<Session>> {
+pub async fn get_sessions_in_state(pool: &DbPool, states: &[SessionState]) -> Result<Vec<Session>> {
     if states.is_empty() {
         return Ok(Vec::new());
     }
@@ -547,7 +602,7 @@ pub async fn get_sessions_in_state(pool: &DbPool, states: &[&str]) -> Result<Vec
 
     let mut query = sqlx::query(&query_str);
     for state in states {
-        query = query.bind(state);
+        query = query.bind(state.as_str());
     }
 
     let rows = query
@@ -555,7 +610,11 @@ pub async fn get_sessions_in_state(pool: &DbPool, states: &[&str]) -> Result<Vec
         .await
         .context("Failed to get sessions by state")?;
 
-    let sessions = rows.into_iter().map(|row| map_session_row(&row)).collect();
+    let sessions = rows
+        .into_iter()
+        .map(|row| map_session_row(&row))
+        .collect::<Result<Vec<_>>>()
+        .context("Failed to parse sessions by state")?;
 
     Ok(sessions)
 }

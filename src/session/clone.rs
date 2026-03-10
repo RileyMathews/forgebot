@@ -7,6 +7,7 @@ use tracing::{error, info};
 
 use crate::config::Config;
 use crate::db::{DbPool, update_repo_clone_status, validate_repo_full_name};
+use crate::session::CloneStatus;
 use crate::session::worktree::bare_clone_path;
 
 /// Timeout for git clone operations (10 minutes)
@@ -44,7 +45,7 @@ pub async fn perform_clone(db: &DbPool, config: &Arc<Config>, repo_full_name: &s
     info!(repo = %repo_full_name, "Starting repository clone");
 
     // Update status to "cloning" before starting
-    update_repo_clone_status(db, repo_full_name, "cloning", None)
+    update_repo_clone_status(db, repo_full_name, CloneStatus::Cloning, None)
         .await
         .with_context(|| {
             format!(
@@ -67,7 +68,7 @@ pub async fn perform_clone(db: &DbPool, config: &Arc<Config>, repo_full_name: &s
                 path = %bare_path.display(),
                 "Clone directory exists and appears complete, marking as ready"
             );
-            update_repo_clone_status(db, repo_full_name, "ready", None)
+            update_repo_clone_status(db, repo_full_name, CloneStatus::Ready, None)
                 .await
                 .with_context(|| {
                     format!(
@@ -81,7 +82,7 @@ pub async fn perform_clone(db: &DbPool, config: &Arc<Config>, repo_full_name: &s
             update_repo_clone_status(
                 db,
                 repo_full_name,
-                "failed",
+                CloneStatus::Failed,
                 Some("Clone directory already exists but appears incomplete (another clone may be in progress)"),
             )
             .await
@@ -140,7 +141,7 @@ pub async fn perform_clone(db: &DbPool, config: &Arc<Config>, repo_full_name: &s
         Ok(Ok(output)) => {
             if output.status.success() {
                 // Clone succeeded - update to ready
-                update_repo_clone_status(db, repo_full_name, "ready", None)
+                update_repo_clone_status(db, repo_full_name, CloneStatus::Ready, None)
                     .await
                     .with_context(|| {
                         format!(
@@ -156,7 +157,7 @@ pub async fn perform_clone(db: &DbPool, config: &Arc<Config>, repo_full_name: &s
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 let error_msg = format!("git clone failed: {}", stderr);
 
-                update_repo_clone_status(db, repo_full_name, "failed", Some(&error_msg))
+                update_repo_clone_status(db, repo_full_name, CloneStatus::Failed, Some(&error_msg))
                     .await
                     .with_context(|| {
                         format!(
@@ -182,7 +183,7 @@ pub async fn perform_clone(db: &DbPool, config: &Arc<Config>, repo_full_name: &s
             // Command execution error (not timeout)
             let error_msg = format!("Failed to execute git clone: {}", e);
 
-            update_repo_clone_status(db, repo_full_name, "failed", Some(&error_msg))
+            update_repo_clone_status(db, repo_full_name, CloneStatus::Failed, Some(&error_msg))
                 .await
                 .with_context(|| {
                     format!(
@@ -203,7 +204,7 @@ pub async fn perform_clone(db: &DbPool, config: &Arc<Config>, repo_full_name: &s
             // Timeout occurred
             let error_msg = "Clone operation timed out after 10 minutes";
 
-            update_repo_clone_status(db, repo_full_name, "failed", Some(error_msg))
+            update_repo_clone_status(db, repo_full_name, CloneStatus::Failed, Some(error_msg))
                 .await
                 .with_context(|| {
                     format!(

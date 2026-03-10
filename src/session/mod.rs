@@ -51,7 +51,8 @@ impl std::str::FromStr for SessionAction {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SessionState {
     Planning,
     Building,
@@ -59,6 +60,52 @@ pub enum SessionState {
     Idle,
     Busy,
     Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloneStatus {
+    Pending,
+    Cloning,
+    Ready,
+    Failed,
+}
+
+impl CloneStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Cloning => "cloning",
+            Self::Ready => "ready",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+impl std::str::FromStr for CloneStatus {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "pending" => Ok(Self::Pending),
+            "cloning" => Ok(Self::Cloning),
+            "ready" => Ok(Self::Ready),
+            "failed" => Ok(Self::Failed),
+            _ => anyhow::bail!("Unknown clone status: {}", value),
+        }
+    }
+}
+
+impl std::fmt::Display for CloneStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl PartialEq<&str> for CloneStatus {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
 }
 
 impl SessionState {
@@ -91,6 +138,18 @@ impl std::str::FromStr for SessionState {
             "error" => Ok(Self::Error),
             _ => anyhow::bail!("Unknown session state: {}", value),
         }
+    }
+}
+
+impl std::fmt::Display for SessionState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl PartialEq<&str> for SessionState {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
     }
 }
 
@@ -535,5 +594,27 @@ mod tests {
         assert!(SessionState::Revising.is_busy());
         assert!(!SessionState::Idle.is_busy());
         assert!(!SessionState::Error.is_busy());
+    }
+
+    #[test]
+    fn test_clone_status_mappings() {
+        assert_eq!(CloneStatus::Pending.as_str(), "pending");
+        assert_eq!(CloneStatus::Cloning.as_str(), "cloning");
+        assert_eq!(CloneStatus::Ready.as_str(), "ready");
+        assert_eq!(CloneStatus::Failed.as_str(), "failed");
+
+        assert_eq!(
+            "pending".parse::<CloneStatus>().unwrap(),
+            CloneStatus::Pending
+        );
+        assert_eq!(
+            "cloning".parse::<CloneStatus>().unwrap(),
+            CloneStatus::Cloning
+        );
+        assert_eq!("ready".parse::<CloneStatus>().unwrap(), CloneStatus::Ready);
+        assert_eq!(
+            "failed".parse::<CloneStatus>().unwrap(),
+            CloneStatus::Failed
+        );
     }
 }

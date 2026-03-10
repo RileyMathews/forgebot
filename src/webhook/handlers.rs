@@ -128,7 +128,7 @@ pub async fn handle_issue_comment(
     match session_result {
         Ok(Some(session)) => {
             // Check if session is busy
-            if matches!(session.state.parse::<SessionState>(), Ok(state) if state.is_busy()) {
+            if session.state.is_busy() {
                 info!(
                     "Session {} is busy (state: {}), posting busy comment",
                     session.id, session.state
@@ -552,7 +552,7 @@ pub async fn handle_pull_request_review_comment(
     };
 
     // 4. Check if session is busy
-    if matches!(session.state.parse::<SessionState>(), Ok(state) if state.is_busy()) {
+    if session.state.is_busy() {
         info!(
             "Session {} is busy (state: {}), posting busy comment",
             session.id, session.state

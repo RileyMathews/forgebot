@@ -136,10 +136,7 @@ pub async fn remove_repository(
             )
         })?;
 
-    let active_states = ["planning", "building", "revising"];
-    let has_active_sessions = final_sessions
-        .iter()
-        .any(|s| active_states.contains(&s.state.as_str()));
+    let has_active_sessions = final_sessions.iter().any(|s| s.state.is_busy());
 
     if has_active_sessions {
         anyhow::bail!(

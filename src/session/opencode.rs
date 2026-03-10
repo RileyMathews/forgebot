@@ -565,7 +565,7 @@ pub async fn dispatch_session(
 
     // If session exists and is busy, reject
     if let Some(ref session) = existing_session
-        && matches!(session.state.parse::<SessionState>(), Ok(state) if state.is_busy())
+        && session.state.is_busy()
     {
         info!(
             "Session {} is busy (state: {}), posting rejection comment",
@@ -677,7 +677,7 @@ Error output: {}",
             // Set state to error if session exists
             if let Some(ref session) = existing_session
                 && let Err(update_err) =
-                    update_session_state(db, &session.id, SessionState::Error.as_str()).await
+                    update_session_state(db, &session.id, SessionState::Error).await
             {
                 error!(
                     session_id = %session.id,
@@ -747,7 +747,7 @@ Error output: {}",
     }
 
     // 11. Update session state
-    update_session_state(db, &session_record.id, new_state.as_str()).await?;
+    update_session_state(db, &session_record.id, new_state).await?;
 
     // 12. Determine agent mode
     let agent_mode = trigger.action.agent_mode();
@@ -813,7 +813,7 @@ Error output: {}",
                 // Don't fail the entire operation for this
             }
 
-            update_session_state(db, &session_record.id, SessionState::Idle.as_str()).await?;
+            update_session_state(db, &session_record.id, SessionState::Idle).await?;
 
             let success_msg = match trigger.action {
                 SessionAction::Plan => {
@@ -846,7 +846,7 @@ Error output: {}",
                 error = %error_str,
                 "Session failed"
             );
-            update_session_state(db, &session_record.id, SessionState::Error.as_str()).await?;
+            update_session_state(db, &session_record.id, SessionState::Error).await?;
 
             let error_msg = format!(
                 "❌ Task failed. Error: {}\n\nSession set to error state. Please re-trigger when ready.",
@@ -891,8 +891,7 @@ pub async fn startup_crash_recovery(
 ) -> Result<usize> {
     info!("Running startup crash recovery...");
 
-    let stuck_states: Vec<&str> = SESSION_BUSY_STATES.iter().map(|s| s.as_str()).collect();
-    let stuck_sessions = match get_sessions_in_state(db, &stuck_states).await {
+    let stuck_sessions = match get_sessions_in_state(db, SESSION_BUSY_STATES).await {
         Ok(sessions) => sessions,
         Err(e) => {
             error!("Failed to query stuck sessions: {}", e);
@@ -921,7 +920,7 @@ pub async fn startup_crash_recovery(
         );
 
         // Set state to error
-        if let Err(e) = update_session_state(db, &session.id, SessionState::Error.as_str()).await {
+        if let Err(e) = update_session_state(db, &session.id, SessionState::Error).await {
             error!(
                 session_id = %session.id,
                 error = %e,
