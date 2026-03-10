@@ -561,12 +561,11 @@ async fn capture_opencode_session_id(binary: &str, title: &str) -> Result<Option
         Ok(sessions) => {
             if let Some(sessions_array) = sessions.as_array() {
                 for session in sessions_array {
-                    if let Some(session_title) = session.get("title").and_then(|t| t.as_str()) {
-                        if session_title == title {
-                            if let Some(session_id) = session.get("id").and_then(|id| id.as_str()) {
-                                return Ok(Some(session_id.to_string()));
-                            }
-                        }
+                    if let Some(session_title) = session.get("title").and_then(|t| t.as_str())
+                        && session_title == title
+                        && let Some(session_id) = session.get("id").and_then(|id| id.as_str())
+                    {
+                        return Ok(Some(session_id.to_string()));
                     }
                 }
             }
@@ -636,19 +635,20 @@ pub async fn dispatch_session(
     };
 
     // 3. Fetch PR review comments if in revision phase
-    let pr_review_comments = if trigger.action == SessionAction::Revision && trigger.pr_id.is_some()
-    {
-        // Safe to unwrap: guarded by is_some() check above
-        let pr_id = trigger.pr_id.unwrap();
-        match forgejo
-            .list_pr_review_comments(&trigger.repo_full_name, pr_id)
-            .await
-        {
-            Ok(comments) => comments,
-            Err(e) => {
-                warn!("Failed to fetch PR review comments for PR {}: {}", pr_id, e);
-                Vec::new()
+    let pr_review_comments = if trigger.action == SessionAction::Revision {
+        if let Some(pr_id) = trigger.pr_id {
+            match forgejo
+                .list_pr_review_comments(&trigger.repo_full_name, pr_id)
+                .await
+            {
+                Ok(comments) => comments,
+                Err(e) => {
+                    warn!("Failed to fetch PR review comments for PR {}: {}", pr_id, e);
+                    Vec::new()
+                }
             }
+        } else {
+            Vec::new()
         }
     } else {
         Vec::new()
@@ -865,14 +865,13 @@ Error output: {}",
             );
 
             // If we captured a new opencode session ID, update the database
-            if let Some(new_session_id) = captured_session_id {
-                if let Err(e) =
+            if let Some(new_session_id) = captured_session_id
+                && let Err(e) =
                     crate::db::update_session_opencode_id(db, &session_record.id, &new_session_id)
                         .await
-                {
-                    error!("Failed to update session with opencode ID: {}", e);
-                    // Don't fail the entire operation for this
-                }
+            {
+                error!("Failed to update session with opencode ID: {}", e);
+                // Don't fail the entire operation for this
             }
 
             update_session_state(db, &session_record.id, SessionState::Idle.as_str()).await?;

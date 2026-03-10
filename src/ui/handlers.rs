@@ -15,10 +15,9 @@ use crate::db::{
 };
 use crate::forgejo::ForgejoClient;
 use crate::session::SESSION_ACTIVE_STATES;
-use crate::session::clone::build_clone_url;
 use crate::session::env_loader::load_env;
 use crate::session::repo_cleanup;
-use crate::session::worktree::{bare_clone_path, clone_exists};
+use crate::session::worktree::bare_clone_path;
 use crate::webhook::AppState;
 
 // ============================================================================
@@ -40,10 +39,8 @@ struct RepoSetupTemplate {
     name: String,
     default_branch: String,
     env_loader: String,
-    clone_present: bool,
     clone_status: String,
     clone_error: Option<String>,
-    clone_command: String,
     webhook_registered: bool,
     webhook_url: String,
     webhook_secret: String,
@@ -78,8 +75,6 @@ struct RepoWithStatus {
     owner: String,
     name: String,
     default_branch: String,
-    env_loader: String,
-    clone_present: bool,
     clone_status: String,
     clone_error: Option<String>,
     webhook_registered: bool,
@@ -130,9 +125,6 @@ pub async fn dashboard(State(state): State<AppState>) -> impl IntoResponse {
         let owner = owner_name.first().unwrap_or(&"").to_string();
         let name = owner_name.get(1).unwrap_or(&"").to_string();
 
-        // Check if clone exists
-        let clone_present = clone_exists(&state.config.opencode, &repo.full_name);
-
         // Check webhook status
         let webhook_registered =
             check_webhook_status(&state.forgejo, &repo.full_name, &state.config).await;
@@ -151,8 +143,6 @@ pub async fn dashboard(State(state): State<AppState>) -> impl IntoResponse {
             owner,
             name,
             default_branch: repo.default_branch,
-            env_loader: repo.env_loader,
-            clone_present,
             clone_status: repo.clone_status,
             clone_error: repo.clone_error,
             webhook_registered,
@@ -251,12 +241,6 @@ pub async fn repo_setup(
         }
     };
 
-    // Check clone status
-    let clone_present = clone_exists(&state.config.opencode, &full_name);
-
-    // Build clone command
-    let clone_command = format_clone_command(&state.config, &full_name, &repo.default_branch);
-
     // Build webhook URL and secret
     let webhook_url = format_webhook_url(&state.config);
     let webhook_secret = state.config.server.webhook_secret.clone();
@@ -284,10 +268,8 @@ pub async fn repo_setup(
         name: name.clone(),
         default_branch: repo.default_branch,
         env_loader: repo.env_loader,
-        clone_present,
         clone_status: repo.clone_status,
         clone_error: repo.clone_error,
-        clone_command,
         webhook_registered,
         webhook_url,
         webhook_secret,
@@ -665,17 +647,6 @@ async fn get_session_count(db: &DbPool, full_name: &str) -> anyhow::Result<i64> 
     Ok(count)
 }
 
-/// Format the git clone command for display
-fn format_clone_command(
-    config: &Arc<crate::config::Config>,
-    full_name: &str,
-    _default_branch: &str,
-) -> String {
-    let clone_url = build_clone_url(&config.forgejo.url, full_name);
-    let destination = bare_clone_path(&config.opencode, full_name);
-    format!("git clone --bare {} {}/", clone_url, destination.display())
-}
-
 /// Get the bare clone path for a repo
 fn get_bare_clone_path(config: &Arc<crate::config::Config>, full_name: &str) -> std::path::PathBuf {
     bare_clone_path(&config.opencode, full_name)
@@ -701,12 +672,6 @@ async fn render_repo_setup_with_message(
             return internal_error_response(format!("Failed to get repo: {}", e));
         }
     };
-
-    // Check clone status
-    let clone_present = clone_exists(&state.config.opencode, &full_name);
-
-    // Build clone command
-    let clone_command = format_clone_command(&state.config, &full_name, &repo.default_branch);
 
     // Build webhook URL and secret
     let webhook_url = format_webhook_url(&state.config);
@@ -735,10 +700,8 @@ async fn render_repo_setup_with_message(
         name,
         default_branch: repo.default_branch,
         env_loader: repo.env_loader,
-        clone_present,
         clone_status: repo.clone_status,
         clone_error: repo.clone_error,
-        clone_command,
         webhook_registered,
         webhook_url,
         webhook_secret,

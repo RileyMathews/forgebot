@@ -277,9 +277,3 @@ pub async fn start_server(state: AppState) -> Result<()> {
 
     Ok(())
 }
-
-/// Compute HMAC-SHA256 signature for testing
-pub fn compute_test_signature(secret: &str, body: &[u8]) -> String {
-    let verifier = WebhookVerifier::new(secret.to_string());
-    verifier.compute_signature(body)
-}

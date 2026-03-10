@@ -9,7 +9,7 @@
 
 use forgebot::db::{
     DbPool, NewSession, delete_repo, get_sessions_for_repo, init_db_at_path, insert_repo,
-    insert_session, update_session_state,
+    insert_session,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -405,7 +405,7 @@ async fn test_all_valid_states_recognized_by_handler() {
         .await
         .expect("Failed to insert repo");
 
-    let valid_states = vec!["planning", "building", "idle", "busy", "error"];
+    let valid_states = ["planning", "building", "idle", "busy", "error"];
 
     for (i, state) in valid_states.iter().enumerate() {
         let session = NewSession {
@@ -420,7 +420,7 @@ async fn test_all_valid_states_recognized_by_handler() {
 
         insert_session(&pool, &session)
             .await
-            .expect(&format!("Failed to insert session with state: {}", state));
+            .unwrap_or_else(|_| panic!("Failed to insert session with state: {}", state));
 
         // Verify the state is correctly stored
         let sessions = get_sessions_for_repo(&pool, repo)
@@ -575,7 +575,7 @@ async fn test_active_check_handles_intermediate_states() {
             .await
             .expect("Failed to insert repo");
 
-        let states = vec!["planning", "building", "idle", "busy", "error"];
+        let states = ["planning", "building", "idle", "busy", "error"];
         insert_test_session(&pool, &repo, 1, states[i], "/tmp/worktree")
             .await
             .expect("Failed to insert session");

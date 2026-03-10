@@ -215,7 +215,6 @@ pub async fn handle_issue_comment(
         issue_id: payload.issue.number,
         pr_id: None,
         action,
-        comment_body: payload.comment.body.clone(),
     };
 
     // Clone values for the spawned task
@@ -592,7 +591,6 @@ pub async fn handle_pull_request_review_comment(
         issue_id: session.issue_id as u64,
         pr_id: Some(payload.pull_request.number),
         action: SessionAction::Revision,
-        comment_body: payload.review_comment.body.clone(),
     };
 
     // Clone values for the spawned task

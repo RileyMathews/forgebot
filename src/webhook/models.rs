@@ -1,29 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-/// X-Gitea-Event header values
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum GiteaEvent {
-    Issues,
-    IssueComment,
-    PullRequest,
-    PullRequestReviewComment,
-    #[serde(other)]
-    Other,
-}
-
-impl std::fmt::Display for GiteaEvent {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            GiteaEvent::Issues => write!(f, "issues"),
-            GiteaEvent::IssueComment => write!(f, "issue_comment"),
-            GiteaEvent::PullRequest => write!(f, "pull_request"),
-            GiteaEvent::PullRequestReviewComment => write!(f, "pull_request_review_comment"),
-            GiteaEvent::Other => write!(f, "other"),
-        }
-    }
-}
-
 /// User object in webhook payloads
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -38,15 +14,6 @@ pub struct User {
 pub struct Repository {
     pub id: u64,
     pub full_name: String,
-}
-
-/// Issue or PR object in webhook payloads
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub struct IssueOrPR {
-    pub number: u64,
-    pub title: String,
-    pub body: Option<String>,
 }
 
 /// Git reference object (head or base)

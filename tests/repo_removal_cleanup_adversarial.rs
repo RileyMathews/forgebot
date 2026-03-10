@@ -178,7 +178,7 @@ async fn test_worktree_paths_extracted_correctly() {
         .await
         .expect("Failed to insert repo");
 
-    let worktree_paths = vec![
+    let worktree_paths = [
         "/tmp/worktrees/owner-test-repo-1",
         "/home/user/.local/state/worktree-2",
         "/var/tmp/session-worktree-3",
@@ -353,7 +353,7 @@ async fn test_cleanup_preserves_other_repos() {
     // When cleaning up one repo, others should be unaffected
     let (pool, test_dir) = setup_test_db().await;
 
-    let repos = vec!["owner/repo-a", "owner/repo-b", "owner/repo-c"];
+    let repos = ["owner/repo-a", "owner/repo-b", "owner/repo-c"];
 
     // Create repos and sessions
     for (i, repo) in repos.iter().enumerate() {
@@ -418,7 +418,7 @@ async fn test_cleanup_handles_all_session_states() {
         .await
         .expect("Failed to insert repo");
 
-    let states = vec!["planning", "building", "idle", "busy", "error"];
+    let states = ["planning", "building", "idle", "busy", "error"];
 
     for (i, state) in states.iter().enumerate() {
         let session = NewSession {
@@ -469,7 +469,7 @@ async fn test_cleanup_handles_sessions_with_pr_ids() {
         .expect("Failed to insert repo");
 
     // Create sessions with various PR ID combinations
-    let pr_combinations = vec![None, Some(1), Some(42), Some(999)];
+    let pr_combinations = [None, Some(1), Some(42), Some(999)];
 
     for (i, pr_id) in pr_combinations.iter().enumerate() {
         let session = NewSession {

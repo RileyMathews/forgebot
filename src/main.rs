@@ -1,15 +1,9 @@
 use anyhow::{Context, Result};
+use forgebot::{config, db, forgejo, session, webhook};
 use sqlx::Row;
 use std::sync::Arc;
 use tracing::{Level, error, info, warn};
 use tracing_subscriber::FmtSubscriber;
-
-mod config;
-mod db;
-pub mod forgejo;
-mod session;
-mod ui;
-mod webhook;
 
 #[tokio::main]
 async fn main() -> Result<()> {

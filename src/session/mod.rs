@@ -116,7 +116,6 @@ pub struct SessionTrigger {
     pub issue_id: u64,
     pub pr_id: Option<u64>,
     pub action: SessionAction,
-    pub comment_body: String, // for revision phase context
 }
 
 /// Comment text helpers for consistent bot messaging

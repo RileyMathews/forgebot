@@ -439,7 +439,7 @@ async fn test_update_session_state_to_all_valid_states() {
         .await
         .expect("Failed to insert repo");
 
-    let valid_states = vec!["planning", "building", "idle", "busy", "error"];
+    let valid_states = ["planning", "building", "idle", "busy", "error"];
 
     for (i, state) in valid_states.iter().enumerate() {
         let session = NewSession {
@@ -781,7 +781,7 @@ async fn test_owner_name_various_formats() {
     let (pool, test_dir) = setup_test_db().await;
 
     // Test various valid owner formats
-    let test_cases = vec![
+    let test_cases = [
         ("org-name", "repo"),
         ("org_name", "repo"),
         ("org123", "repo"),
