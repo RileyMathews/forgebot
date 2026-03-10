@@ -16,6 +16,13 @@ use crate::session::{
 
 use super::models::*;
 
+fn ok_response(body: &str) -> Response {
+    Response::builder()
+        .status(200)
+        .body(body.to_string().into())
+        .unwrap()
+}
+
 /// Handle issue_comment webhook events
 pub async fn handle_issue_comment(
     payload: IssueCommentPayload,
@@ -37,11 +44,7 @@ pub async fn handle_issue_comment(
             "Ignoring comment from bot user '{}' (loop prevention)",
             config.forgejo.bot_username
         );
-        // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
-        return Ok(Response::builder()
-            .status(200)
-            .body("OK - ignored bot comment".into())
-            .unwrap());
+        return Ok(ok_response("OK - ignored bot comment"));
     }
 
     // 2. Ignore if repository repo_full_name not in repos table (not watched)
@@ -54,11 +57,7 @@ pub async fn handle_issue_comment(
                 "Repository '{}' not watched, ignoring comment",
                 payload.repository.full_name
             );
-            // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
-            return Ok(Response::builder()
-                .status(200)
-                .body("OK - repo not watched".into())
-                .unwrap());
+            return Ok(ok_response("OK - repo not watched"));
         }
         Err(e) => {
             error!(
@@ -72,11 +71,7 @@ pub async fn handle_issue_comment(
     // 3. Ignore if comment body does not contain "@forgebot"
     if !payload.comment.body.contains("@forgebot") {
         info!("Comment does not contain @forgebot trigger, ignoring");
-        // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
-        return Ok(Response::builder()
-            .status(200)
-            .body("OK - no @forgebot trigger".into())
-            .unwrap());
+        return Ok(ok_response("OK - no @forgebot trigger"));
     }
 
     // 4. Parse action from trigger
@@ -106,11 +101,7 @@ pub async fn handle_issue_comment(
                 {
                     error!("Failed to post busy comment: {}", e);
                 }
-                // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
-                return Ok(Response::builder()
-                    .status(200)
-                    .body("OK - session busy".into())
-                    .unwrap());
+                return Ok(ok_response("OK - session busy"));
             }
         }
         Ok(None) => {
@@ -126,11 +117,7 @@ pub async fn handle_issue_comment(
                     &err_msg,
                 )
                 .await;
-            // Return 200 so Forgejo doesn't retry; Response::builder() cannot fail with standard strings
-            return Ok(Response::builder()
-                .status(200)
-                .body("OK - error logged".into())
-                .unwrap());
+            return Ok(ok_response("OK - error logged"));
         }
     }
 
@@ -171,11 +158,7 @@ pub async fn handle_issue_comment(
                     &err_msg,
                 )
                 .await;
-            // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
-            return Ok(Response::builder()
-                .status(200)
-                .body("OK - error logged".into())
-                .unwrap());
+            return Ok(ok_response("OK - error logged"));
         }
 
         // Retrieve the newly created session
@@ -183,11 +166,7 @@ pub async fn handle_issue_comment(
             Ok(Some(session)) => session,
             _ => {
                 error!("Failed to retrieve newly created session");
-                // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
-                return Ok(Response::builder()
-                    .status(200)
-                    .body("OK - session creation error".into())
-                    .unwrap());
+                return Ok(ok_response("OK - session creation error"));
             }
         }
     };
@@ -232,11 +211,7 @@ pub async fn handle_issue_comment(
     });
 
     // 9. Return 200 immediately (non-blocking)
-    // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
-    Ok(Response::builder()
-        .status(200)
-        .body("OK - dispatching session".into())
-        .unwrap())
+    Ok(ok_response("OK - dispatching session"))
 }
 
 /// Parse action keyword from comment body
@@ -285,11 +260,7 @@ pub async fn handle_pull_request(
         "closed" | "merged" => handle_pr_closed(&payload, db, forgejo, config).await,
         _ => {
             info!("Ignoring pull_request action: {}", payload.action);
-            // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
-            Ok(Response::builder()
-                .status(200)
-                .body("OK - unhandled action".into())
-                .unwrap())
+            Ok(ok_response("OK - unhandled action"))
         }
     }
 }
@@ -310,11 +281,7 @@ async fn handle_pr_opened(
                 "PR head branch '{}' does not match agent/issue-<id> pattern, ignoring",
                 head_ref
             );
-            // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
-            return Ok(Response::builder()
-                .status(200)
-                .body("OK - not a forgebot PR".into())
-                .unwrap());
+            return Ok(ok_response("OK - not a forgebot PR"));
         }
     };
 
@@ -329,19 +296,11 @@ async fn handle_pr_opened(
                     "No session found for {} issue {}, cannot link PR",
                     payload.repository.full_name, issue_id
                 );
-                // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
-                return Ok(Response::builder()
-                    .status(200)
-                    .body("OK - no session found".into())
-                    .unwrap());
+                return Ok(ok_response("OK - no session found"));
             }
             Err(e) => {
                 error!("Failed to get session: {}", e);
-                // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
-                return Ok(Response::builder()
-                    .status(200)
-                    .body("OK - database error".into())
-                    .unwrap());
+                return Ok(ok_response("OK - database error"));
             }
         };
 
@@ -349,20 +308,12 @@ async fn handle_pr_opened(
     let pr_id = payload.pull_request.number as i64;
     if let Err(e) = update_session_pr_id(db, &session.id, pr_id).await {
         error!("Failed to update session PR ID: {}", e);
-        // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
-        return Ok(Response::builder()
-            .status(200)
-            .body("OK - update error".into())
-            .unwrap());
+        return Ok(ok_response("OK - update error"));
     }
 
     info!("Linked PR {} to session {}", pr_id, session.id);
 
-    // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
-    Ok(Response::builder()
-        .status(200)
-        .body("OK - PR linked to session".into())
-        .unwrap())
+    Ok(ok_response("OK - PR linked to session"))
 }
 
 /// Handle PR closed/merged action - queue worktree cleanup
@@ -381,11 +332,7 @@ async fn handle_pr_closed(
                 "PR head branch '{}' does not match agent/issue-<id> pattern, ignoring",
                 head_ref
             );
-            // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
-            return Ok(Response::builder()
-                .status(200)
-                .body("OK - not a forgebot PR".into())
-                .unwrap());
+            return Ok(ok_response("OK - not a forgebot PR"));
         }
     };
 
@@ -403,19 +350,11 @@ async fn handle_pr_closed(
                     "No session found for {} issue {}, nothing to clean up",
                     payload.repository.full_name, issue_id
                 );
-                // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
-                return Ok(Response::builder()
-                    .status(200)
-                    .body("OK - no session".into())
-                    .unwrap());
+                return Ok(ok_response("OK - no session"));
             }
             Err(e) => {
                 error!("Failed to get session: {}", e);
-                // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
-                return Ok(Response::builder()
-                    .status(200)
-                    .body("OK - database error".into())
-                    .unwrap());
+                return Ok(ok_response("OK - database error"));
             }
         };
 
@@ -447,11 +386,7 @@ async fn handle_pr_closed(
         }
     });
 
-    // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
-    Ok(Response::builder()
-        .status(200)
-        .body("OK - worktree cleanup queued".into())
-        .unwrap())
+    Ok(ok_response("OK - worktree cleanup queued"))
 }
 
 /// Extract issue ID from branch name like "agent/issue-42"
@@ -493,21 +428,13 @@ pub async fn handle_pull_request_review_comment(
             "Ignoring review comment from bot user '{}' (loop prevention)",
             config.forgejo.bot_username
         );
-        // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
-        return Ok(Response::builder()
-            .status(200)
-            .body("OK - ignored bot comment".into())
-            .unwrap());
+        return Ok(ok_response("OK - ignored bot comment"));
     }
 
     // 2. Ignore if comment body does not contain "@forgebot"
     if !payload.review_comment.body.contains("@forgebot") {
         info!("Review comment does not contain @forgebot trigger, ignoring");
-        // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
-        return Ok(Response::builder()
-            .status(200)
-            .body("OK - no @forgebot trigger".into())
-            .unwrap());
+        return Ok(ok_response("OK - no @forgebot trigger"));
     }
 
     // 3. Look up session by PR ID
@@ -527,11 +454,7 @@ pub async fn handle_pull_request_review_comment(
                     &fail_msg,
                 )
                 .await;
-            // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
-            return Ok(Response::builder()
-                .status(200)
-                .body("OK - no session context".into())
-                .unwrap());
+            return Ok(ok_response("OK - no session context"));
         }
         Err(e) => {
             error!("Failed to get session by PR: {}", e);
@@ -543,11 +466,7 @@ pub async fn handle_pull_request_review_comment(
                     &err_msg,
                 )
                 .await;
-            // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
-            return Ok(Response::builder()
-                .status(200)
-                .body("OK - error logged".into())
-                .unwrap());
+            return Ok(ok_response("OK - error logged"));
         }
     };
 
@@ -565,11 +484,7 @@ pub async fn handle_pull_request_review_comment(
                 &busy_msg,
             )
             .await;
-        // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
-        return Ok(Response::builder()
-            .status(200)
-            .body("OK - session busy".into())
-            .unwrap());
+        return Ok(ok_response("OK - session busy"));
     }
 
     // 5. Post acknowledgement comment on PR
@@ -608,11 +523,7 @@ pub async fn handle_pull_request_review_comment(
     });
 
     // 7. Return 200 immediately
-    // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
-    Ok(Response::builder()
-        .status(200)
-        .body("OK - dispatching revision".into())
-        .unwrap())
+    Ok(ok_response("OK - dispatching revision"))
 }
 
 /// Handle unknown webhook events
@@ -623,8 +534,7 @@ pub async fn handle_unknown_event(event_type: &str) -> Result<Response, axum::re
     );
 
     // Return 200 OK - we don't want Forgejo to retry unknown events
-    // Response::builder() with standard strings cannot fail; unwrap is safe (last-resort error response)
-    Ok(Response::builder().status(200).body("OK".into()).unwrap())
+    Ok(ok_response("OK"))
 }
 
 #[cfg(test)]
