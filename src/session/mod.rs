@@ -7,6 +7,8 @@ pub mod worktree;
 
 use crate::forgejo::models::{Issue, IssueComment, PullRequestReviewComment};
 
+use errors::SessionError;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionAction {
     Plan,
@@ -40,14 +42,14 @@ impl SessionAction {
 }
 
 impl std::str::FromStr for SessionAction {
-    type Err = anyhow::Error;
+    type Err = SessionError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "plan" => Ok(Self::Plan),
             "build" => Ok(Self::Build),
             "revision" => Ok(Self::Revision),
-            _ => anyhow::bail!("Unknown session action: {}", value),
+            _ => Err(SessionError::UnknownAction(value.to_string())),
         }
     }
 }
@@ -84,7 +86,7 @@ impl CloneStatus {
 }
 
 impl std::str::FromStr for CloneStatus {
-    type Err = anyhow::Error;
+    type Err = SessionError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
@@ -92,7 +94,7 @@ impl std::str::FromStr for CloneStatus {
             "cloning" => Ok(Self::Cloning),
             "ready" => Ok(Self::Ready),
             "failed" => Ok(Self::Failed),
-            _ => anyhow::bail!("Unknown clone status: {}", value),
+            _ => Err(SessionError::UnknownCloneStatus(value.to_string())),
         }
     }
 }
@@ -127,7 +129,7 @@ impl SessionState {
 }
 
 impl std::str::FromStr for SessionState {
-    type Err = anyhow::Error;
+    type Err = SessionError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
@@ -137,7 +139,7 @@ impl std::str::FromStr for SessionState {
             "idle" => Ok(Self::Idle),
             "busy" => Ok(Self::Busy),
             "error" => Ok(Self::Error),
-            _ => anyhow::bail!("Unknown session state: {}", value),
+            _ => Err(SessionError::UnknownState(value.to_string())),
         }
     }
 }
