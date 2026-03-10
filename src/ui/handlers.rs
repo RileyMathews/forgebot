@@ -14,9 +14,11 @@ use crate::db::{
     update_repo_env_loader, validate_repo_full_name,
 };
 use crate::forgejo::ForgejoClient;
+use crate::session::SESSION_ACTIVE_STATES;
+use crate::session::clone::build_clone_url;
 use crate::session::env_loader::load_env;
 use crate::session::repo_cleanup;
-use crate::session::worktree::clone_exists;
+use crate::session::worktree::{bare_clone_path, clone_exists};
 use crate::webhook::AppState;
 
 // ============================================================================
@@ -455,7 +457,10 @@ pub async fn sessions(State(state): State<AppState>) -> impl IntoResponse {
     // Get all active sessions (all non-terminal states)
     let all_sessions = match crate::db::get_sessions_in_state(
         &state.db,
-        &["planning", "building", "idle", "busy", "error"],
+        &SESSION_ACTIVE_STATES
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>(),
     )
     .await
     {
@@ -484,7 +489,10 @@ pub async fn session_logs(
     // First, get the session to verify it exists and get metadata
     let sessions = match crate::db::get_sessions_in_state(
         &state.db,
-        &["planning", "building", "idle", "busy", "error"],
+        &SESSION_ACTIVE_STATES
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>(),
     )
     .await
     {
@@ -642,9 +650,14 @@ async fn check_webhook_status(
 
 /// Get the count of active sessions for a repo
 async fn get_session_count(db: &DbPool, full_name: &str) -> anyhow::Result<i64> {
-    let sessions =
-        crate::db::get_sessions_in_state(db, &["planning", "building", "idle", "busy", "error"])
-            .await?;
+    let sessions = crate::db::get_sessions_in_state(
+        db,
+        &SESSION_ACTIVE_STATES
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>(),
+    )
+    .await?;
     let count = sessions
         .iter()
         .filter(|s| s.repo_full_name == full_name)
@@ -658,26 +671,14 @@ fn format_clone_command(
     full_name: &str,
     _default_branch: &str,
 ) -> String {
-    let parts: Vec<&str> = full_name.split('/').collect();
-    let owner = parts.first().unwrap_or(&"");
-    let repo = parts.get(1).unwrap_or(&"");
-    let repo_dir = format!("{}_{}", owner, repo);
-    let worktree_base = config.opencode.worktree_base.display();
-
-    format!(
-        "git clone --bare https://{}/{}/{}.git {}/{}/",
-        config.forgejo.url, owner, repo, worktree_base, repo_dir
-    )
+    let clone_url = build_clone_url(&config.forgejo.url, full_name);
+    let destination = bare_clone_path(&config.opencode, full_name);
+    format!("git clone --bare {} {}/", clone_url, destination.display())
 }
 
 /// Get the bare clone path for a repo
 fn get_bare_clone_path(config: &Arc<crate::config::Config>, full_name: &str) -> std::path::PathBuf {
-    let parts: Vec<&str> = full_name.split('/').collect();
-    let owner = parts.first().unwrap_or(&"").to_lowercase();
-    let repo = parts.get(1).unwrap_or(&"").to_lowercase();
-    let repo_dir = format!("{}_{}", owner, repo);
-
-    config.opencode.worktree_base.join(repo_dir)
+    bare_clone_path(&config.opencode, full_name)
 }
 
 /// Render the repo setup page with a status message

@@ -12,6 +12,15 @@ use crate::session::worktree::bare_clone_path;
 /// Timeout for git clone operations (10 minutes)
 const CLONE_TIMEOUT: Duration = Duration::from_secs(600);
 
+pub fn build_clone_url(forgejo_url: &str, repo_full_name: &str) -> String {
+    let trimmed_url = forgejo_url.trim_end_matches('/');
+    if trimmed_url.starts_with("http://") || trimmed_url.starts_with("https://") {
+        format!("{}/{}.git", trimmed_url, repo_full_name)
+    } else {
+        format!("https://{}/{}.git", trimmed_url, repo_full_name)
+    }
+}
+
 /// Perform a bare clone of a repository.
 ///
 /// This function handles the full clone lifecycle:
@@ -91,12 +100,7 @@ pub async fn perform_clone(db: &DbPool, config: &Arc<Config>, repo_full_name: &s
 
     // Construct the clone URL
     // Handle both cases: URL with or without protocol prefix
-    let forgejo_url = config.forgejo.url.trim_end_matches('/');
-    let clone_url = if forgejo_url.starts_with("http://") || forgejo_url.starts_with("https://") {
-        format!("{}/{}.git", forgejo_url, repo_full_name)
-    } else {
-        format!("https://{}/{}.git", forgejo_url, repo_full_name)
-    };
+    let clone_url = build_clone_url(&config.forgejo.url, repo_full_name);
 
     // Ensure parent directory exists
     let parent_dir = bare_path
@@ -259,14 +263,7 @@ mod tests {
         let config = test_config();
         let repo_full_name = "alice/myrepo";
 
-        // Test the URL construction logic (same as production code)
-        let forgejo_url = config.forgejo.url.trim_end_matches('/');
-        let clone_url = if forgejo_url.starts_with("http://") || forgejo_url.starts_with("https://")
-        {
-            format!("{}/{}.git", forgejo_url, repo_full_name)
-        } else {
-            format!("https://{}/{}.git", forgejo_url, repo_full_name)
-        };
+        let clone_url = build_clone_url(&config.forgejo.url, repo_full_name);
 
         assert_eq!(clone_url, "https://git.example.com/alice/myrepo.git");
     }
@@ -299,13 +296,7 @@ mod tests {
         };
 
         let repo_full_name = "riley/pr-tracker-rust";
-        let forgejo_url = config_with_https.forgejo.url.trim_end_matches('/');
-        let clone_url = if forgejo_url.starts_with("http://") || forgejo_url.starts_with("https://")
-        {
-            format!("{}/{}.git", forgejo_url, repo_full_name)
-        } else {
-            format!("https://{}/{}.git", forgejo_url, repo_full_name)
-        };
+        let clone_url = build_clone_url(&config_with_https.forgejo.url, repo_full_name);
 
         // Should NOT have double https://
         assert_eq!(
@@ -343,13 +334,7 @@ mod tests {
         };
 
         let repo_full_name = "alice/myrepo";
-        let forgejo_url = config_with_slash.forgejo.url.trim_end_matches('/');
-        let clone_url = if forgejo_url.starts_with("http://") || forgejo_url.starts_with("https://")
-        {
-            format!("{}/{}.git", forgejo_url, repo_full_name)
-        } else {
-            format!("https://{}/{}.git", forgejo_url, repo_full_name)
-        };
+        let clone_url = build_clone_url(&config_with_slash.forgejo.url, repo_full_name);
 
         // Should NOT have double slash
         assert_eq!(clone_url, "https://git.example.com/alice/myrepo.git");

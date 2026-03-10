@@ -55,14 +55,16 @@ pub async fn remove_repository(
     // c) Remove all worktrees (await completion - don't fire-and-forget)
     let mut worktree_tasks = Vec::new();
     let git_binary = config.opencode.git_binary.clone();
+    let bare_clone_dir = bare_clone_path(&config.opencode, full_name);
     for session in sessions {
         let worktree_path = PathBuf::from(&session.worktree_path);
         let repo_name = full_name.to_string();
         let issue_id = session.issue_id;
         let git_binary_clone = git_binary.clone();
+        let bare_clone_dir_clone = bare_clone_dir.clone();
 
         let handle = tokio::spawn(async move {
-            match remove_worktree(&worktree_path, &git_binary_clone).await {
+            match remove_worktree(&worktree_path, &bare_clone_dir_clone, &git_binary_clone).await {
                 Ok(()) => {
                     info!(
                         repo = %repo_name,
@@ -97,7 +99,6 @@ pub async fn remove_repository(
     }
 
     // d) Remove bare clone directory
-    let bare_clone_dir = bare_clone_path(&config.opencode, full_name);
     match tokio::fs::remove_dir_all(&bare_clone_dir).await {
         Ok(()) => {
             info!(

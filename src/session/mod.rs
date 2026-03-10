@@ -6,13 +6,116 @@ pub mod worktree;
 
 use crate::forgejo::models::{Issue, IssueComment, PullRequestReviewComment};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionAction {
+    Plan,
+    Build,
+    Revision,
+}
+
+impl SessionAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Plan => "plan",
+            Self::Build => "build",
+            Self::Revision => "revision",
+        }
+    }
+
+    pub fn state(self) -> SessionState {
+        match self {
+            Self::Plan => SessionState::Planning,
+            Self::Build => SessionState::Building,
+            Self::Revision => SessionState::Revising,
+        }
+    }
+
+    pub fn agent_mode(self) -> &'static str {
+        match self {
+            Self::Plan => "plan",
+            Self::Build | Self::Revision => "build",
+        }
+    }
+}
+
+impl std::str::FromStr for SessionAction {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "plan" => Ok(Self::Plan),
+            "build" => Ok(Self::Build),
+            "revision" => Ok(Self::Revision),
+            _ => anyhow::bail!("Unknown session action: {}", value),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionState {
+    Planning,
+    Building,
+    Revising,
+    Idle,
+    Busy,
+    Error,
+}
+
+impl SessionState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Planning => "planning",
+            Self::Building => "building",
+            Self::Revising => "revising",
+            Self::Idle => "idle",
+            Self::Busy => "busy",
+            Self::Error => "error",
+        }
+    }
+
+    pub fn is_busy(self) -> bool {
+        matches!(self, Self::Planning | Self::Building | Self::Revising)
+    }
+}
+
+impl std::str::FromStr for SessionState {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "planning" => Ok(Self::Planning),
+            "building" => Ok(Self::Building),
+            "revising" => Ok(Self::Revising),
+            "idle" => Ok(Self::Idle),
+            "busy" => Ok(Self::Busy),
+            "error" => Ok(Self::Error),
+            _ => anyhow::bail!("Unknown session state: {}", value),
+        }
+    }
+}
+
+pub const SESSION_ACTIVE_STATES: &[SessionState] = &[
+    SessionState::Planning,
+    SessionState::Building,
+    SessionState::Revising,
+    SessionState::Idle,
+    SessionState::Busy,
+    SessionState::Error,
+];
+
+pub const SESSION_BUSY_STATES: &[SessionState] = &[
+    SessionState::Planning,
+    SessionState::Building,
+    SessionState::Revising,
+];
+
 /// Trigger information for starting a session
 #[derive(Debug, Clone)]
 pub struct SessionTrigger {
     pub repo_full_name: String,
     pub issue_id: u64,
     pub pr_id: Option<u64>,
-    pub action: String,       // "plan", "build", "revision"
+    pub action: SessionAction,
     pub comment_body: String, // for revision phase context
 }
 
@@ -87,17 +190,16 @@ fn sanitize_for_session_id(s: &str) -> String {
 /// # Returns
 /// The full prompt string for opencode
 pub fn build_prompt(
-    phase: &str,
+    phase: SessionAction,
     issue: &Issue,
     issue_comments: &[IssueComment],
     pr_review_comments: &[PullRequestReviewComment],
     pr_id: Option<u64>,
 ) -> String {
     match phase {
-        "plan" => build_plan_prompt(issue, issue_comments),
-        "build" => build_build_prompt(issue, issue_comments),
-        "revision" => build_revision_prompt(issue, pr_review_comments, pr_id),
-        _ => format!("Unknown phase: {}", phase),
+        SessionAction::Plan => build_plan_prompt(issue, issue_comments),
+        SessionAction::Build => build_build_prompt(issue, issue_comments),
+        SessionAction::Revision => build_revision_prompt(issue, pr_review_comments, pr_id),
     }
 }
 
@@ -328,7 +430,7 @@ mod tests {
     fn test_build_plan_prompt() {
         let issue = test_issue();
         let comments = test_comments();
-        let prompt = build_prompt("plan", &issue, &comments, &[], None);
+        let prompt = build_prompt(SessionAction::Plan, &issue, &comments, &[], None);
 
         // Check for key components
         assert!(prompt.contains("issue #42"));
@@ -345,7 +447,7 @@ mod tests {
     fn test_build_build_prompt() {
         let issue = test_issue();
         let comments = test_comments();
-        let prompt = build_prompt("build", &issue, &comments, &[], None);
+        let prompt = build_prompt(SessionAction::Build, &issue, &comments, &[], None);
 
         // Check for key components
         assert!(prompt.contains("issue #42"));
@@ -366,7 +468,13 @@ mod tests {
             created_at: "2024-01-03T10:00:00Z".to_string(),
             updated_at: "2024-01-03T10:00:00Z".to_string(),
         }];
-        let prompt = build_prompt("revision", &issue, &[], &review_comments, Some(123));
+        let prompt = build_prompt(
+            SessionAction::Revision,
+            &issue,
+            &[],
+            &review_comments,
+            Some(123),
+        );
 
         // Check for key components
         assert!(prompt.contains("Your PR #123"));
@@ -380,7 +488,7 @@ mod tests {
     #[test]
     fn test_build_prompt_empty_comments() {
         let issue = test_issue();
-        let prompt = build_prompt("plan", &issue, &[], &[], None);
+        let prompt = build_prompt(SessionAction::Plan, &issue, &[], &[], None);
 
         assert!(prompt.contains("(no comments)"));
     }
@@ -404,5 +512,29 @@ mod tests {
         assert_eq!(sanitize_for_session_id("already_lower"), "already_lower");
         assert_eq!(sanitize_for_session_id("123abc"), "123abc");
         assert_eq!(sanitize_for_session_id("!@#$%"), "_____");
+    }
+
+    #[test]
+    fn test_session_action_mappings() {
+        assert_eq!(SessionAction::Plan.as_str(), "plan");
+        assert_eq!(SessionAction::Build.as_str(), "build");
+        assert_eq!(SessionAction::Revision.as_str(), "revision");
+
+        assert_eq!(SessionAction::Plan.state(), SessionState::Planning);
+        assert_eq!(SessionAction::Build.state(), SessionState::Building);
+        assert_eq!(SessionAction::Revision.state(), SessionState::Revising);
+
+        assert_eq!(SessionAction::Plan.agent_mode(), "plan");
+        assert_eq!(SessionAction::Build.agent_mode(), "build");
+        assert_eq!(SessionAction::Revision.agent_mode(), "build");
+    }
+
+    #[test]
+    fn test_session_state_busy_policy() {
+        assert!(SessionState::Planning.is_busy());
+        assert!(SessionState::Building.is_busy());
+        assert!(SessionState::Revising.is_busy());
+        assert!(!SessionState::Idle.is_busy());
+        assert!(!SessionState::Error.is_busy());
     }
 }
