@@ -23,6 +23,48 @@ fn ok_response(body: &str) -> Response {
         .unwrap()
 }
 
+async fn post_issue_comment_non_blocking(
+    forgejo: &ForgejoClient,
+    repo_full_name: &str,
+    issue_number: u64,
+    message: &str,
+    context: &str,
+) {
+    if let Err(e) = forgejo
+        .post_issue_comment(repo_full_name, issue_number, message)
+        .await
+    {
+        warn!(
+            repo = %repo_full_name,
+            issue_id = %issue_number,
+            err = %e,
+            "Failed to post issue comment: {}",
+            context
+        );
+    }
+}
+
+async fn post_pr_comment_non_blocking(
+    forgejo: &ForgejoClient,
+    repo_full_name: &str,
+    pr_number: u64,
+    message: &str,
+    context: &str,
+) {
+    if let Err(e) = forgejo
+        .post_pr_comment(repo_full_name, pr_number, message)
+        .await
+    {
+        warn!(
+            repo = %repo_full_name,
+            pr_id = %pr_number,
+            err = %e,
+            "Failed to post PR comment: {}",
+            context
+        );
+    }
+}
+
 /// Handle issue_comment webhook events
 pub async fn handle_issue_comment(
     payload: IssueCommentPayload,
@@ -61,8 +103,9 @@ pub async fn handle_issue_comment(
         }
         Err(e) => {
             error!(
-                "Failed to check repo {}: {}",
-                payload.repository.full_name, e
+                repo = %payload.repository.full_name,
+                err = %e,
+                "Failed to check repo watch state"
             );
             // Continue processing - don't make Forgejo retry
         }
@@ -110,13 +153,14 @@ pub async fn handle_issue_comment(
         Err(e) => {
             error!("Failed to get session: {}", e);
             let err_msg = comment_text_error(&format!("Failed to load session: {}", e));
-            let _ = forgejo
-                .post_issue_comment(
-                    &payload.repository.full_name,
-                    payload.issue.number,
-                    &err_msg,
-                )
-                .await;
+            post_issue_comment_non_blocking(
+                forgejo,
+                &payload.repository.full_name,
+                payload.issue.number,
+                &err_msg,
+                "session load error",
+            )
+            .await;
             return Ok(ok_response("OK - error logged"));
         }
     }
@@ -124,10 +168,28 @@ pub async fn handle_issue_comment(
     // 6. Create new session if needed and update state
     let session_id = derive_session_id(&payload.repository.full_name, payload.issue.number);
     // Check if session exists and create if not
-    let existing_session = get_session_by_issue(db, &payload.repository.full_name, issue_id)
-        .await
-        .ok()
-        .flatten();
+    let existing_session =
+        match get_session_by_issue(db, &payload.repository.full_name, issue_id).await {
+            Ok(session) => session,
+            Err(e) => {
+                error!(
+                    repo = %payload.repository.full_name,
+                    issue_id = %payload.issue.number,
+                    err = %e,
+                    "Failed to load session before create"
+                );
+                let err_msg = comment_text_error(&format!("Failed to load session: {}", e));
+                post_issue_comment_non_blocking(
+                    forgejo,
+                    &payload.repository.full_name,
+                    payload.issue.number,
+                    &err_msg,
+                    "session load before create",
+                )
+                .await;
+                return Ok(ok_response("OK - error logged"));
+            }
+        };
 
     let _session_record = if let Some(session) = existing_session {
         session
@@ -149,23 +211,42 @@ pub async fn handle_issue_comment(
         };
 
         if let Err(e) = insert_session(db, &new_session).await {
-            error!("Failed to create session: {}", e);
+            error!(
+                repo = %payload.repository.full_name,
+                issue_id = %payload.issue.number,
+                err = %e,
+                "Failed to create session"
+            );
             let err_msg = comment_text_error(&format!("Failed to create session: {}", e));
-            let _ = forgejo
-                .post_issue_comment(
-                    &payload.repository.full_name,
-                    payload.issue.number,
-                    &err_msg,
-                )
-                .await;
+            post_issue_comment_non_blocking(
+                forgejo,
+                &payload.repository.full_name,
+                payload.issue.number,
+                &err_msg,
+                "session create error",
+            )
+            .await;
             return Ok(ok_response("OK - error logged"));
         }
 
         // Retrieve the newly created session
         match get_session_by_issue(db, &payload.repository.full_name, issue_id).await {
             Ok(Some(session)) => session,
-            _ => {
-                error!("Failed to retrieve newly created session");
+            Ok(None) => {
+                error!(
+                    repo = %payload.repository.full_name,
+                    issue_id = %payload.issue.number,
+                    "Session missing immediately after create"
+                );
+                return Ok(ok_response("OK - session creation error"));
+            }
+            Err(e) => {
+                error!(
+                    repo = %payload.repository.full_name,
+                    issue_id = %payload.issue.number,
+                    err = %e,
+                    "Failed to retrieve newly created session"
+                );
                 return Ok(ok_response("OK - session creation error"));
             }
         }
@@ -177,16 +258,14 @@ pub async fn handle_issue_comment(
         SessionAction::Build | SessionAction::Revision => comment_text_working(),
     };
 
-    if let Err(e) = forgejo
-        .post_issue_comment(
-            &payload.repository.full_name,
-            payload.issue.number,
-            &ack_msg,
-        )
-        .await
-    {
-        error!("Failed to post acknowledgement comment: {}", e);
-    }
+    post_issue_comment_non_blocking(
+        forgejo,
+        &payload.repository.full_name,
+        payload.issue.number,
+        &ack_msg,
+        "acknowledgement",
+    )
+    .await;
 
     // 8. Create SessionTrigger and dispatch in background task
     let trigger = SessionTrigger {
@@ -447,25 +526,27 @@ pub async fn handle_pull_request_review_comment(
                 pr_id
             );
             let fail_msg = comment_text_no_context();
-            let _ = forgejo
-                .post_pr_comment(
-                    &payload.repository.full_name,
-                    payload.pull_request.number,
-                    &fail_msg,
-                )
-                .await;
+            post_pr_comment_non_blocking(
+                forgejo,
+                &payload.repository.full_name,
+                payload.pull_request.number,
+                &fail_msg,
+                "missing session context",
+            )
+            .await;
             return Ok(ok_response("OK - no session context"));
         }
         Err(e) => {
             error!("Failed to get session by PR: {}", e);
             let err_msg = comment_text_error(&format!("Failed to load session: {}", e));
-            let _ = forgejo
-                .post_pr_comment(
-                    &payload.repository.full_name,
-                    payload.pull_request.number,
-                    &err_msg,
-                )
-                .await;
+            post_pr_comment_non_blocking(
+                forgejo,
+                &payload.repository.full_name,
+                payload.pull_request.number,
+                &err_msg,
+                "session load by PR error",
+            )
+            .await;
             return Ok(ok_response("OK - error logged"));
         }
     };
@@ -477,28 +558,27 @@ pub async fn handle_pull_request_review_comment(
             session.id, session.state
         );
         let busy_msg = comment_text_busy();
-        let _ = forgejo
-            .post_pr_comment(
-                &payload.repository.full_name,
-                payload.pull_request.number,
-                &busy_msg,
-            )
-            .await;
+        post_pr_comment_non_blocking(
+            forgejo,
+            &payload.repository.full_name,
+            payload.pull_request.number,
+            &busy_msg,
+            "session busy",
+        )
+        .await;
         return Ok(ok_response("OK - session busy"));
     }
 
     // 5. Post acknowledgement comment on PR
     let ack_msg = "🤖 forgebot is addressing review comments...".to_string();
-    if let Err(e) = forgejo
-        .post_pr_comment(
-            &payload.repository.full_name,
-            payload.pull_request.number,
-            &ack_msg,
-        )
-        .await
-    {
-        error!("Failed to post acknowledgement comment: {}", e);
-    }
+    post_pr_comment_non_blocking(
+        forgejo,
+        &payload.repository.full_name,
+        payload.pull_request.number,
+        &ack_msg,
+        "revision acknowledgement",
+    )
+    .await;
 
     // 6. Create SessionTrigger with action "revision" and dispatch
     let trigger = SessionTrigger {
