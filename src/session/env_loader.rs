@@ -1,4 +1,3 @@
-use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
@@ -6,6 +5,8 @@ use std::process::Output;
 use tokio::process::Command;
 use tokio::time::{Duration, timeout};
 use tracing::{debug, warn};
+
+use crate::session::env_loader_errors::{EnvLoaderError, Result};
 
 /// Load environment variables based on the specified loader type.
 ///
@@ -34,10 +35,7 @@ pub async fn load_env(loader_type: &str, worktree_path: &Path) -> Result<HashMap
         "none" => Ok(load_env_none()),
         "direnv" => load_env_direnv(worktree_path).await,
         "nix" => load_env_nix(worktree_path).await,
-        other => bail!(
-            "Invalid env_loader type: {}. Must be 'none', 'direnv', or 'nix'",
-            other
-        ),
+        other => Err(EnvLoaderError::InvalidLoaderType(other.to_string())),
     }
 }
 
@@ -60,16 +58,15 @@ async fn load_env_direnv(worktree_path: &Path) -> Result<HashMap<String, String>
             .current_dir(worktree_path),
         30, // 30 second timeout for direnv
     )
-    .await
-    .with_context(|| "Failed to execute 'direnv export json'. Is direnv installed and on PATH?")?;
+    .await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "direnv export json failed with exit code {:?}: {}",
-            output.status.code(),
-            stderr
-        );
+        return Err(EnvLoaderError::CommandFailed {
+            command: "direnv export json",
+            exit_code: output.status.code(),
+            stderr: stderr.to_string(),
+        });
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -88,8 +85,12 @@ pub fn parse_direnv_json(output: &str) -> Result<HashMap<String, String>> {
     }
 
     // Direnv outputs a flat object of string values
-    let env_vars: HashMap<String, String> = serde_json::from_str(trimmed)
-        .with_context(|| format!("Failed to parse direnv JSON output: {}", trimmed))?;
+    let env_vars: HashMap<String, String> =
+        serde_json::from_str(trimmed).map_err(|source| EnvLoaderError::ParseJson {
+            loader: "direnv",
+            output: trimmed.to_string(),
+            source,
+        })?;
 
     debug!(
         "Parsed {} environment variables from direnv output",
@@ -114,18 +115,15 @@ async fn load_env_nix(worktree_path: &Path) -> Result<HashMap<String, String>> {
             .current_dir(worktree_path),
         60, // 60 second timeout for nix (per spec)
     )
-    .await
-    .with_context(
-        || "Failed to execute 'nix print-dev-env --json'. Is nix installed and on PATH?",
-    )?;
+    .await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "nix print-dev-env failed with exit code {:?}: {}",
-            output.status.code(),
-            stderr
-        );
+        return Err(EnvLoaderError::CommandFailed {
+            command: "nix print-dev-env --json",
+            exit_code: output.status.code(),
+            stderr: stderr.to_string(),
+        });
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -152,8 +150,12 @@ struct NixEnvOutput {
 pub fn parse_nix_json(output: &str) -> Result<HashMap<String, String>> {
     let trimmed = output.trim();
 
-    let nix_output: NixEnvOutput = serde_json::from_str(trimmed)
-        .with_context(|| format!("Failed to parse nix JSON output: {}", trimmed))?;
+    let nix_output: NixEnvOutput =
+        serde_json::from_str(trimmed).map_err(|source| EnvLoaderError::ParseJson {
+            loader: "nix",
+            output: trimmed.to_string(),
+            source,
+        })?;
 
     let mut env_vars = HashMap::new();
 
@@ -207,8 +209,11 @@ async fn run_command_with_timeout(cmd: &mut Command, timeout_secs: u64) -> Resul
 
     match result {
         Ok(Ok(output)) => Ok(output),
-        Ok(Err(e)) => Err(e).with_context(|| "Command execution failed"),
-        Err(_) => bail!("Command timed out after {} seconds", timeout_secs),
+        Ok(Err(source)) => Err(EnvLoaderError::CommandExecution {
+            command: "subprocess",
+            source,
+        }),
+        Err(_) => Err(EnvLoaderError::Timeout(timeout_secs)),
     }
 }
 
@@ -263,7 +268,7 @@ mod tests {
         let result = parse_direnv_json(json);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("Failed to parse direnv JSON"));
+        assert!(err.contains("failed to parse direnv JSON"));
     }
 
     #[test]
@@ -367,7 +372,7 @@ mod tests {
         let result = parse_nix_json(json);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("Failed to parse nix JSON"));
+        assert!(err.contains("failed to parse nix JSON"));
     }
 
     #[test]

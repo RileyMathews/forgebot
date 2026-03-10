@@ -1,13 +1,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
 use tokio::process::Command;
 use tracing::{error, info};
 
 use crate::config::Config;
 use crate::db::{DbPool, update_repo_clone_status, validate_repo_full_name};
 use crate::session::CloneStatus;
+use crate::session::clone_errors::{CloneError, Result};
 use crate::session::worktree::bare_clone_path;
 
 /// Timeout for git clone operations (10 minutes)
@@ -40,18 +40,17 @@ pub fn build_clone_url(forgejo_url: &str, repo_full_name: &str) -> String {
 /// Result<()> - Ok on successful clone, Err otherwise
 pub async fn perform_clone(db: &DbPool, config: &Arc<Config>, repo_full_name: &str) -> Result<()> {
     // Validate repo_full_name format as defense-in-depth
-    validate_repo_full_name(repo_full_name).context("repository name validation failed")?;
+    validate_repo_full_name(repo_full_name).map_err(CloneError::InvalidRepoName)?;
 
     info!(repo = %repo_full_name, "Starting repository clone");
 
     // Update status to "cloning" before starting
     update_repo_clone_status(db, repo_full_name, CloneStatus::Cloning, None)
         .await
-        .with_context(|| {
-            format!(
-                "Failed to set clone status to 'cloning' for {}",
-                repo_full_name
-            )
+        .map_err(|source| CloneError::StatusUpdate {
+            repo: repo_full_name.to_string(),
+            status: "cloning",
+            source,
         })?;
 
     // Construct the bare clone path
@@ -70,11 +69,10 @@ pub async fn perform_clone(db: &DbPool, config: &Arc<Config>, repo_full_name: &s
             );
             update_repo_clone_status(db, repo_full_name, CloneStatus::Ready, None)
                 .await
-                .with_context(|| {
-                    format!(
-                        "Failed to set clone status to 'ready' for {}",
-                        repo_full_name
-                    )
+                .map_err(|source| CloneError::StatusUpdate {
+                    repo: repo_full_name.to_string(),
+                    status: "ready",
+                    source,
                 })?;
             return Ok(());
         } else {
@@ -86,16 +84,14 @@ pub async fn perform_clone(db: &DbPool, config: &Arc<Config>, repo_full_name: &s
                 Some("Clone directory already exists but appears incomplete (another clone may be in progress)"),
             )
             .await
-            .with_context(|| {
-                format!(
-                    "Failed to set clone status to 'failed' for {}",
-                    repo_full_name
-                )
+            .map_err(|source| CloneError::StatusUpdate {
+                repo: repo_full_name.to_string(),
+                status: "failed",
+                source,
             })?;
-            anyhow::bail!(
-                "Clone directory already exists for {} but appears incomplete",
-                repo_full_name
-            );
+            return Err(CloneError::IncompleteExistingClone(
+                repo_full_name.to_string(),
+            ));
         }
     }
 
@@ -106,15 +102,13 @@ pub async fn perform_clone(db: &DbPool, config: &Arc<Config>, repo_full_name: &s
     // Ensure parent directory exists
     let parent_dir = bare_path
         .parent()
-        .with_context(|| format!("Bare clone path has no parent: {}", bare_path.display()))?;
+        .ok_or_else(|| CloneError::BarePathMissingParent(bare_path.clone()))?;
 
     tokio::fs::create_dir_all(parent_dir)
         .await
-        .with_context(|| {
-            format!(
-                "Failed to create parent directory: {}",
-                parent_dir.display()
-            )
+        .map_err(|source| CloneError::CreateParentDir {
+            path: parent_dir.to_path_buf(),
+            source,
         })?;
 
     // Run git clone --bare with timeout
@@ -143,11 +137,10 @@ pub async fn perform_clone(db: &DbPool, config: &Arc<Config>, repo_full_name: &s
                 // Clone succeeded - update to ready
                 update_repo_clone_status(db, repo_full_name, CloneStatus::Ready, None)
                     .await
-                    .with_context(|| {
-                        format!(
-                            "Failed to set clone status to 'ready' for {}",
-                            repo_full_name
-                        )
+                    .map_err(|source| CloneError::StatusUpdate {
+                        repo: repo_full_name.to_string(),
+                        status: "ready",
+                        source,
                     })?;
 
                 info!(repo = %repo_full_name, "Repository clone completed successfully");
@@ -159,11 +152,10 @@ pub async fn perform_clone(db: &DbPool, config: &Arc<Config>, repo_full_name: &s
 
                 update_repo_clone_status(db, repo_full_name, CloneStatus::Failed, Some(&error_msg))
                     .await
-                    .with_context(|| {
-                        format!(
-                            "Failed to set clone status to 'failed' for {}",
-                            repo_full_name
-                        )
+                    .map_err(|source| CloneError::StatusUpdate {
+                        repo: repo_full_name.to_string(),
+                        status: "failed",
+                        source,
                     })?;
 
                 error!(
@@ -172,11 +164,10 @@ pub async fn perform_clone(db: &DbPool, config: &Arc<Config>, repo_full_name: &s
                     "Repository clone failed"
                 );
 
-                Err(anyhow::anyhow!(
-                    "Clone failed for {}: {}",
-                    repo_full_name,
-                    error_msg
-                ))
+                Err(CloneError::CloneFailed {
+                    repo: repo_full_name.to_string(),
+                    stderr: error_msg,
+                })
             }
         }
         Ok(Err(e)) => {
@@ -185,11 +176,10 @@ pub async fn perform_clone(db: &DbPool, config: &Arc<Config>, repo_full_name: &s
 
             update_repo_clone_status(db, repo_full_name, CloneStatus::Failed, Some(&error_msg))
                 .await
-                .with_context(|| {
-                    format!(
-                        "Failed to set clone status to 'failed' for {}",
-                        repo_full_name
-                    )
+                .map_err(|source| CloneError::StatusUpdate {
+                    repo: repo_full_name.to_string(),
+                    status: "failed",
+                    source,
                 })?;
 
             error!(
@@ -198,7 +188,7 @@ pub async fn perform_clone(db: &DbPool, config: &Arc<Config>, repo_full_name: &s
                 "Failed to execute git clone command"
             );
 
-            Err(e).context("Failed to execute git clone command")
+            Err(CloneError::ExecuteClone(e))
         }
         Err(_) => {
             // Timeout occurred
@@ -206,11 +196,10 @@ pub async fn perform_clone(db: &DbPool, config: &Arc<Config>, repo_full_name: &s
 
             update_repo_clone_status(db, repo_full_name, CloneStatus::Failed, Some(error_msg))
                 .await
-                .with_context(|| {
-                    format!(
-                        "Failed to set clone status to 'failed' for {}",
-                        repo_full_name
-                    )
+                .map_err(|source| CloneError::StatusUpdate {
+                    repo: repo_full_name.to_string(),
+                    status: "failed",
+                    source,
                 })?;
 
             error!(
@@ -219,11 +208,10 @@ pub async fn perform_clone(db: &DbPool, config: &Arc<Config>, repo_full_name: &s
                 "Clone operation timed out"
             );
 
-            anyhow::bail!(
-                "Clone timeout for {} after {} seconds",
-                repo_full_name,
-                CLONE_TIMEOUT.as_secs()
-            );
+            Err(CloneError::Timeout {
+                repo: repo_full_name.to_string(),
+                seconds: CLONE_TIMEOUT.as_secs(),
+            })
         }
     }
 }
