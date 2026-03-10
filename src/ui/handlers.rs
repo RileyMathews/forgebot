@@ -80,7 +80,7 @@ pub struct EnvLoaderForm {
 // Route Handlers
 // ============================================================================
 
-/// GET /ui - Dashboard showing all repos
+/// GET / - Dashboard showing all repos
 pub async fn dashboard(State(state): State<AppState>) -> impl IntoResponse {
     // Get all repos from database
     let repos = match list_repos(&state.db).await {
@@ -126,7 +126,7 @@ pub async fn dashboard(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
-/// POST /ui/repos - Add a new repository
+/// POST /repos - Add a new repository
 pub async fn add_repo(
     State(state): State<AppState>,
     Form(form): Form<AddRepoForm>,
@@ -134,7 +134,7 @@ pub async fn add_repo(
     // Validate the full_name format
     if let Err(e) = validate_repo_full_name(&form.full_name) {
         warn!(full_name = %form.full_name, error = %e, "Invalid repo full name format");
-        return Redirect::to("/ui").into_response();
+        return Redirect::to("/").into_response();
     }
 
     // Validate env_loader value
@@ -157,7 +157,7 @@ pub async fn add_repo(
     .await
     {
         error!("Failed to insert repo: {}", e);
-        return Redirect::to("/ui").into_response();
+        return Redirect::to("/").into_response();
     }
 
     // Spawn background clone task
@@ -178,13 +178,13 @@ pub async fn add_repo(
     if parts.len() == 2 {
         let owner = parts[0];
         let name = parts[1];
-        Redirect::to(&format!("/ui/repo/{}/{}", owner, name)).into_response()
+        Redirect::to(&format!("/repo/{}/{}", owner, name)).into_response()
     } else {
-        Redirect::to("/ui").into_response()
+        Redirect::to("/").into_response()
     }
 }
 
-/// GET /ui/repo/:owner/:name - Per-repo setup page
+/// GET /repo/:owner/:name - Per-repo setup page
 pub async fn repo_setup(
     State(state): State<AppState>,
     AxumPath((owner, name)): AxumPath<(String, String)>,
@@ -195,7 +195,7 @@ pub async fn repo_setup(
     let repo = match get_repo_by_full_name(&state.db, &full_name).await {
         Ok(Some(repo)) => repo,
         Ok(None) => {
-            return Redirect::to("/ui").into_response();
+            return Redirect::to("/").into_response();
         }
         Err(e) => {
             error!("Failed to get repo: {}", e);
@@ -248,7 +248,7 @@ pub async fn repo_setup(
     }
 }
 
-/// POST /ui/repo/:owner/:name/webhook - Register webhook
+/// POST /repo/:owner/:name/webhook - Register webhook
 pub async fn register_webhook(
     State(state): State<AppState>,
     AxumPath((owner, name)): AxumPath<(String, String)>,
@@ -258,13 +258,13 @@ pub async fn register_webhook(
     // Fetch current repo state
     let repo = match get_repo_by_full_name(&state.db, &full_name).await {
         Ok(Some(repo)) => repo,
-        _ => return Redirect::to("/ui").into_response(),
+        _ => return Redirect::to("/").into_response(),
     };
 
     // Validate clone is ready before allowing webhook registration
     if repo.clone_status != "ready" {
         info!(repo = %full_name, clone_status = %repo.clone_status, "Webhook registration attempted before clone ready");
-        return Redirect::to(&format!("/ui/repo/{}/{}", owner, name)).into_response();
+        return Redirect::to(&format!("/repo/{}/{}", owner, name)).into_response();
     }
 
     // Build webhook URL
@@ -292,7 +292,7 @@ pub async fn register_webhook(
     render_repo_setup_with_message(state, owner, name, message, success).await
 }
 
-/// POST /ui/repo/:owner/:name/env-loader - Update environment loader
+/// POST /repo/:owner/:name/env-loader - Update environment loader
 pub async fn save_env_loader(
     State(state): State<AppState>,
     AxumPath((owner, name)): AxumPath<(String, String)>,
@@ -320,7 +320,7 @@ pub async fn save_env_loader(
     render_repo_setup_with_message(state, owner, name, message, success).await
 }
 
-/// POST /ui/repo/:owner/:name/retry-clone - Retry a failed or pending clone
+/// POST /repo/:owner/:name/retry-clone - Retry a failed or pending clone
 pub async fn retry_clone(
     State(state): State<AppState>,
     AxumPath((owner, name)): AxumPath<(String, String)>,
@@ -330,14 +330,14 @@ pub async fn retry_clone(
     // Validate the full_name format as a safety check
     if let Err(e) = validate_repo_full_name(&full_name) {
         warn!(full_name = %full_name, error = %e, "Invalid repo full name in retry");
-        return Redirect::to("/ui").into_response();
+        return Redirect::to("/").into_response();
     }
 
     // Fetch the repo
     let repo = match get_repo_by_full_name(&state.db, &full_name).await {
         Ok(Some(repo)) => repo,
         Ok(None) => {
-            return Redirect::to("/ui").into_response();
+            return Redirect::to("/").into_response();
         }
         Err(e) => {
             error!("Failed to get repo: {}", e);
@@ -347,7 +347,7 @@ pub async fn retry_clone(
 
     // If clone_status is "cloning" or "ready", can't retry
     if repo.clone_status == "cloning" || repo.clone_status == "ready" {
-        return Redirect::to(&format!("/ui/repo/{}/{}", owner, name)).into_response();
+        return Redirect::to(&format!("/repo/{}/{}", owner, name)).into_response();
     }
 
     // Atomically reset to "pending" state - only succeeds if still failed/pending
@@ -382,10 +382,10 @@ pub async fn retry_clone(
     }
 
     // Redirect back to repo setup page
-    Redirect::to(&format!("/ui/repo/{}/{}", owner, name)).into_response()
+    Redirect::to(&format!("/repo/{}/{}", owner, name)).into_response()
 }
 
-/// POST /ui/repo/:owner/:name/remove - Remove a repository
+/// POST /repo/:owner/:name/remove - Remove a repository
 pub async fn remove_repo(
     State(state): State<AppState>,
     AxumPath((owner, name)): AxumPath<(String, String)>,
@@ -411,8 +411,8 @@ pub async fn remove_repo(
         }
     });
 
-    // Return immediately with a 303 See Other redirect to /ui
-    Redirect::to("/ui").into_response()
+    // Return immediately with a 303 See Other redirect to /
+    Redirect::to("/").into_response()
 }
 
 // ============================================================================
@@ -455,7 +455,7 @@ async fn render_repo_setup_with_message(
     let repo = match get_repo_by_full_name(&state.db, &full_name).await {
         Ok(Some(repo)) => repo,
         Ok(None) => {
-            return Redirect::to("/ui").into_response();
+            return Redirect::to("/").into_response();
         }
         Err(e) => {
             return internal_error_response(format!("Failed to get repo: {}", e));
@@ -518,7 +518,7 @@ fn internal_error_response(message: String) -> Response {
 <html><body>
 <h1>Internal Server Error</h1>
 <p>{}</p>
-<p><a href="/ui">Return to Dashboard</a></p>
+<p><a href="/">Return to Dashboard</a></p>
 </body></html>"#,
                 message
             )

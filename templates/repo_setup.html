@@ -4,7 +4,7 @@
 
 {% block content %}
 <h2 style="margin-bottom: 1.5rem;">
-    <a href="/ui" style="text-decoration: none; color: #3498db;">←</a>
+    <a href="/" style="text-decoration: none; color: #3498db;">←</a>
     Repository Setup: {{ full_name }}
 </h2>
 
@@ -42,7 +42,7 @@
             <div class="step failed">
                 <h3>Step 1: Clone Repository</h3>
                 <p><span class="status-badge status-error">✗ Failed</span> Clone failed.</p>
-                <form method="POST" action="/ui/repo/{{ owner }}/{{ name }}/retry-clone" class="retry-form">
+                <form method="POST" action="/repo/{{ owner }}/{{ name }}/retry-clone" class="retry-form">
                     <button type="submit" class="btn btn-primary">Retry Clone</button>
                 </form>
             </div>
@@ -68,7 +68,7 @@
             <p><strong>Webhook URL:</strong> <code>{{ webhook_url }}</code></p>
             <p><strong>Secret:</strong> <code>{{ webhook_secret }}</code></p>
             
-            <form action="/ui/repo/{{ owner }}/{{ name }}/webhook" method="POST" style="margin-top: 1rem;">
+            <form action="/repo/{{ owner }}/{{ name }}/webhook" method="POST" style="margin-top: 1rem;">
                 <button type="submit" class="btn btn-success" {% if clone_status != "ready" %}disabled{% endif %}>Register Webhook</button>
                 {% if clone_status != "ready" %}
                 <p class="help-text">Waiting for repository clone to complete...</p>
@@ -82,7 +82,7 @@
 <div class="step {% if env_loader != "none" %}complete{% else %}pending{% endif %}">
     <h3>Step 3: Environment Loader</h3>
     
-    <form action="/ui/repo/{{ owner }}/{{ name }}/env-loader" method="POST">
+    <form action="/repo/{{ owner }}/{{ name }}/env-loader" method="POST">
         <div class="radio-group" style="margin-bottom: 1rem;">
             <label>
                 <input type="radio" name="env_loader" value="none" {% if env_loader == "none" %}checked{% endif %}>

@@ -50,8 +50,8 @@
                         {% endif %}
                     </td>
                     <td>
-                        <a href="/ui/repo/{{ repo.owner }}/{{ repo.name }}" class="btn">Setup</a>
-                        <form method="post" action="/ui/repo/{{ repo.owner }}/{{ repo.name }}/remove" style="display:inline">
+                        <a href="/repo/{{ repo.owner }}/{{ repo.name }}" class="btn">Setup</a>
+                        <form method="post" action="/repo/{{ repo.owner }}/{{ repo.name }}/remove" style="display:inline">
                             <button type="submit" class="btn btn-danger" onclick="return confirm('This will permanently delete the repository and all associated data, including the webhook from Forgejo. Continue?')">Remove</button>
                         </form>
                     </td>
@@ -64,7 +64,7 @@
 
 <div class="card">
     <h2>➕ Add Repository</h2>
-    <form action="/ui/repos" method="POST">
+    <form action="/repos" method="POST">
         <div class="form-group">
             <label for="full_name">Repository Full Name (owner/repo)</label>
             <input type="text" id="full_name" name="full_name" placeholder="e.g., alice/myrepo" required>
