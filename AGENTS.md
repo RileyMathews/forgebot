@@ -95,74 +95,15 @@ sqlite3 "$HOME/.local/state/forgebot-local-dev/forgebot.db" \
 curl -si -X POST http://127.0.0.1:8765/ui/repo/riley/terminal-config/webhook
 ```
 
-4. Create an issue in Forgejo and trigger planning/build with issue comments:
+4. Create an issue in Forgejo and trigger planning/build with issue comment. Use the forgejo MCP to create the issue and comment. The comment must contain @forgebot plan
 
-```bash
-python - <<'PY'
-import json, os, time, urllib.request
+5. Verify the session reaches idle and the bot responds with a plan on the issue. Again use the MCP for this.
 
-base = os.environ['FORGEBOT_FORGEJO_URL']
-token = os.environ['FORGEBOT_FORGEJO_TOKEN']
-repo = 'riley/terminal-config'
-headers = {
-    'Authorization': f'token {token}',
-    'Content-Type': 'application/json',
-    'Accept': 'application/json',
-}
+6. Tell the bot to implement the plan with another comment saying '@forgebot build'.
 
-issue_req = urllib.request.Request(
-    f"{base}/api/v1/repos/{repo}/issues",
-    data=json.dumps({
-        'title': f'forgebot e2e smoke {int(time.time())}',
-        'body': 'Smoke test: verify issue-to-PR flow.',
-    }).encode(),
-    method='POST',
-    headers=headers,
-)
-with urllib.request.urlopen(issue_req) as r:
-    issue = json.load(r)
+7. Verify the session reaches `idle` and a PR is created. Use the MCP to fetch PRs and confirm via the body that its linked in some way to the issue created.
 
-for body in ('@forgebot plan', '@forgebot build'):
-    comment_req = urllib.request.Request(
-        f"{base}/api/v1/repos/{repo}/issues/{issue['number']}/comments",
-        data=json.dumps({'body': body}).encode(),
-        method='POST',
-        headers=headers,
-    )
-    urllib.request.urlopen(comment_req).read()
-
-print(f"Issue: {issue['html_url']}")
-PY
-```
-
-5. Verify the session reaches `idle` and a PR is created:
-
-```bash
-# Session status in local DB
-sqlite3 "$HOME/.local/state/forgebot-local-dev/forgebot.db" \
-  "select id, repo_full_name, issue_id, state, pr_id, updated_at from sessions order by updated_at desc limit 5;"
-
-# List open PRs in test repo
-python - <<'PY'
-import json, os, urllib.request
-
-base = os.environ['FORGEBOT_FORGEJO_URL']
-token = os.environ['FORGEBOT_FORGEJO_TOKEN']
-repo = 'riley/terminal-config'
-
-req = urllib.request.Request(
-    f"{base}/api/v1/repos/{repo}/pulls?state=open&limit=10",
-    headers={'Authorization': f'token {token}', 'Accept': 'application/json'},
-)
-with urllib.request.urlopen(req) as r:
-    pulls = json.load(r)
-
-for pr in pulls:
-    print(pr['number'], pr['title'], pr['html_url'])
-PY
-```
-
-6. Always run the post-test cleanup steps from the hygiene section.
+8. Always run the post-test cleanup steps from the hygiene section.
 
 ## Development Shell
 
