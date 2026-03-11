@@ -56,6 +56,27 @@ async fn main() -> Result<()> {
         "Configuration loaded successfully"
     );
 
+    if config.opencode.transport == config::OpencodeTransport::Api {
+        let api_client =
+            session::opencode_api::OpencodeApiClient::from_config(&config.opencode.api)
+                .context("Failed to initialize OpenCode API client")?;
+        let health = api_client
+            .health()
+            .await
+            .context("Failed OpenCode API startup health check")?;
+        if !health.healthy {
+            anyhow::bail!(
+                "OpenCode API health check returned unhealthy status (version={})",
+                health.version
+            );
+        }
+
+        info!(
+            opencode_api_version = %health.version,
+            "OpenCode API startup health check passed"
+        );
+    }
+
     // Initialize database
     let db_pool = db::init_db(&config.database)
         .await

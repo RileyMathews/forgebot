@@ -73,8 +73,8 @@ pub fn webhook_url(config: &Config) -> String {
 impl Config {
     /// Load configuration entirely from environment variables.
     /// Required env vars (must be set or error): FORGEBOT_WEBHOOK_SECRET, FORGEBOT_FORGEJO_URL, FORGEBOT_FORGEJO_TOKEN
-    /// Optional env vars (have defaults): FORGEBOT_SERVER_HOST, FORGEBOT_SERVER_PORT, FORGEBOT_FORGEJO_BOT_USERNAME, FORGEBOT_OPENCODE_BINARY, FORGEBOT_OPENCODE_WORKTREE_BASE, FORGEBOT_OPENCODE_CONFIG_DIR, FORGEBOT_DATABASE_PATH, FORGEBOT_OPENCODE_TRANSPORT, FORGEBOT_OPENCODE_API_TIMEOUT_SECS
-    /// Optional env vars (unset by default): FORGEBOT_OPENCODE_WEB_HOST, FORGEBOT_OPENCODE_API_BASE_URL, FORGEBOT_OPENCODE_API_TOKEN
+    /// Optional env vars (have defaults): FORGEBOT_SERVER_HOST, FORGEBOT_SERVER_PORT, FORGEBOT_FORGEJO_BOT_USERNAME, FORGEBOT_OPENCODE_BINARY, FORGEBOT_OPENCODE_WORKTREE_BASE, FORGEBOT_OPENCODE_CONFIG_DIR, FORGEBOT_DATABASE_PATH, FORGEBOT_OPENCODE_TRANSPORT, FORGEBOT_OPENCODE_API_BASE_URL, FORGEBOT_OPENCODE_API_TIMEOUT_SECS
+    /// Optional env vars (unset by default): FORGEBOT_OPENCODE_WEB_HOST, FORGEBOT_OPENCODE_API_TOKEN
     pub fn load() -> Result<Self> {
         info!("Loading configuration from environment variables...");
 
@@ -122,10 +122,11 @@ impl Config {
         let opencode_model = env_var_with_default("FORGEBOT_OPENCODE_MODEL", "opencode/kimi-k2.5");
         let opencode_web_host = env_var_optional("FORGEBOT_OPENCODE_WEB_HOST");
         let opencode_transport =
-            parse_opencode_transport(&env_var_with_default("FORGEBOT_OPENCODE_TRANSPORT", "cli"))?;
-        let opencode_api_base_url = env_var_optional("FORGEBOT_OPENCODE_API_BASE_URL")
-            .map(|value| validate_http_url("FORGEBOT_OPENCODE_API_BASE_URL", &value))
-            .transpose()?;
+            parse_opencode_transport(&env_var_with_default("FORGEBOT_OPENCODE_TRANSPORT", "api"))?;
+        let opencode_api_base_url = Some(validate_http_url(
+            "FORGEBOT_OPENCODE_API_BASE_URL",
+            &env_var_with_default("FORGEBOT_OPENCODE_API_BASE_URL", "http://127.0.0.1:4096"),
+        )?);
         let opencode_api_token = env_var_optional("FORGEBOT_OPENCODE_API_TOKEN");
         let opencode_api_timeout_secs =
             env_var_parse_u64_with_default("FORGEBOT_OPENCODE_API_TIMEOUT_SECS", 30)?;
@@ -140,9 +141,9 @@ impl Config {
         let database_path =
             env_var_path_with_default("FORGEBOT_DATABASE_PATH", "/var/lib/forgebot/forgebot.db");
 
-        if opencode_transport == OpencodeTransport::Api && opencode_api_base_url.is_none() {
-            anyhow::bail!(
-                "ERROR: FORGEBOT_OPENCODE_API_BASE_URL is required when FORGEBOT_OPENCODE_TRANSPORT=api"
+        if opencode_transport == OpencodeTransport::Cli {
+            warn!(
+                "FORGEBOT_OPENCODE_TRANSPORT=cli is enabled. This is rollback compatibility mode; api transport is the default path."
             );
         }
 
