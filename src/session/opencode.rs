@@ -803,24 +803,61 @@ async fn handle_dispatch_success(
         effective_session_id = Some(new_session_id);
     }
 
-    if should_post_web_link
-        && let (Some(web_host), Some(opencode_id)) =
-            (&config.opencode.web_host, effective_session_id.as_deref())
-    {
-        let web_url =
-            opencode_session_web_url(web_host, &session_record.worktree_path, opencode_id);
-        let web_ui_msg = format!("🔗 Opencode session Web UI: [{}]({})", web_url, web_url);
-        if let Err(e) = forgejo
-            .post_issue_comment(&trigger.repo_full_name, trigger.issue_id, &web_ui_msg)
-            .await
-        {
+    let web_host = config.opencode.web_host.as_deref();
+    match (
+        should_post_web_link,
+        web_host,
+        effective_session_id.as_deref(),
+    ) {
+        (false, _, _) => {
+            info!(
+                repo = %trigger.repo_full_name,
+                issue_id = %trigger.issue_id,
+                session_id = %session_record.id,
+                opencode_session_id = %session_record.opencode_session_id,
+                "Skipping session Web UI link: existing external opencode session ID"
+            );
+        }
+        (true, None, _) => {
+            info!(
+                repo = %trigger.repo_full_name,
+                issue_id = %trigger.issue_id,
+                session_id = %session_record.id,
+                "Skipping session Web UI link: FORGEBOT_OPENCODE_WEB_HOST not configured"
+            );
+        }
+        (true, Some(_), None) => {
             warn!(
                 repo = %trigger.repo_full_name,
                 issue_id = %trigger.issue_id,
                 session_id = %session_record.id,
-                err = %e,
-                "Failed to post session Web UI link"
+                "Skipping session Web UI link: missing effective opencode session ID"
             );
+        }
+        (true, Some(web_host), Some(opencode_id)) => {
+            let web_url =
+                opencode_session_web_url(web_host, &session_record.worktree_path, opencode_id);
+            let web_ui_msg = format!("🔗 Opencode session Web UI: [{}]({})", web_url, web_url);
+            if let Err(e) = forgejo
+                .post_issue_comment(&trigger.repo_full_name, trigger.issue_id, &web_ui_msg)
+                .await
+            {
+                warn!(
+                    repo = %trigger.repo_full_name,
+                    issue_id = %trigger.issue_id,
+                    session_id = %session_record.id,
+                    err = %e,
+                    "Failed to post session Web UI link"
+                );
+            } else {
+                info!(
+                    repo = %trigger.repo_full_name,
+                    issue_id = %trigger.issue_id,
+                    session_id = %session_record.id,
+                    web_url = %web_url,
+                    "Posted session Web UI link"
+                );
+            }
         }
     }
 
