@@ -1,11 +1,8 @@
 use anyhow::{Context, Result};
 use forgebot::{config, db, forgejo, session, webhook};
-use sqlx::Row;
 use std::sync::Arc;
 use tracing::{Level, error, info, warn};
 use tracing_subscriber::FmtSubscriber;
-
-use forgebot::session::CloneStatus;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -60,33 +57,20 @@ async fn main() -> Result<()> {
     info!("Database initialized successfully");
 
     // Crash recovery: reset any repos stuck in 'cloning' state
-    let stuck_clones = sqlx::query(
-        r#"
-        SELECT full_name FROM repos WHERE clone_status = ?1
-    "#,
-    )
-    .bind(CloneStatus::Cloning.as_str())
-    .fetch_all(&db_pool)
-    .await
-    .context("failed to query stuck clones")?;
-
-    for row in stuck_clones {
-        let full_name: String = row.get("full_name");
-        match db::update_repo_clone_status(
-            &db_pool,
-            &full_name,
-            CloneStatus::Failed,
-            Some("Clone interrupted by service restart"),
-        )
+    let stuck_clone_recovery = db::recover_stuck_clones_after_restart(&db_pool)
         .await
-        {
-            Ok(_) => info!(full_name = %full_name, "Reset stuck clone to failed state"),
-            Err(e) => error!(
-                full_name = %full_name,
-                err = %e,
-                "Failed to reset stuck clone (continuing startup)"
-            ),
-        }
+        .context("failed to recover stuck clones")?;
+
+    for full_name in stuck_clone_recovery.recovered_repos {
+        info!(full_name = %full_name, "Reset stuck clone to failed state");
+    }
+
+    for (full_name, err_message) in stuck_clone_recovery.failed_repos {
+        error!(
+            full_name = %full_name,
+            err = %err_message,
+            "Failed to reset stuck clone (continuing startup)"
+        );
     }
 
     // Initialize Forgejo client

@@ -114,7 +114,7 @@ pub async fn dashboard(State(state): State<AppState>) -> impl IntoResponse {
     }
 
     // Build webhook URL
-    let webhook_url = format_webhook_url(&state.config);
+    let webhook_url = crate::config::webhook_url(&state.config);
 
     let template = DashboardTemplate {
         repos: repos_with_status,
@@ -233,7 +233,7 @@ pub async fn register_webhook(
     }
 
     // Build webhook URL
-    let webhook_url = format_webhook_url(&state.config);
+    let webhook_url = crate::config::webhook_url(&state.config);
 
     // Create webhook
     let result = state
@@ -384,18 +384,13 @@ pub async fn remove_repo(
 // Helper Functions
 // ============================================================================
 
-/// Format the webhook URL from config
-fn format_webhook_url(config: &Arc<crate::config::Config>) -> String {
-    format!("{}/webhook", config.server.forgebot_host)
-}
-
 /// Check if webhook is registered for a repo
 async fn check_webhook_status(
     forgejo: &ForgejoClient,
     full_name: &str,
     config: &Arc<crate::config::Config>,
 ) -> bool {
-    let expected_url = format_webhook_url(config);
+    let expected_url = crate::config::webhook_url(config);
 
     match forgejo.list_repo_webhooks(full_name).await {
         Ok(webhooks) => webhooks.iter().any(|w| w.url == expected_url && w.active),
@@ -446,7 +441,7 @@ async fn build_repo_setup_template(
     message: Option<String>,
     success: bool,
 ) -> RepoSetupTemplate {
-    let webhook_url = format_webhook_url(&state.config);
+    let webhook_url = crate::config::webhook_url(&state.config);
     let webhook_secret = state.config.server.webhook_secret.clone();
     let webhook_registered = check_webhook_status(&state.forgejo, &full_name, &state.config).await;
     let token_valid = state

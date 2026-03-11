@@ -62,6 +62,11 @@ pub struct PendingWorktree {
     pub scheduled_at: String,
 }
 
+pub struct StuckCloneRecovery {
+    pub recovered_repos: Vec<String>,
+    pub failed_repos: Vec<(String, String)>,
+}
+
 fn map_repo_row(row: &SqliteRow) -> Result<Repo> {
     let clone_status = row
         .get::<String, _>("clone_status")
@@ -399,6 +404,44 @@ pub async fn update_repo_env_loader(
 
     debug!("Updated repo env_loader: {} -> {}", full_name, env_loader);
     Ok(())
+}
+
+/// Recover repos stuck in 'cloning' by marking them as 'failed'.
+///
+/// This is used during service startup after an unexpected restart.
+pub async fn recover_stuck_clones_after_restart(pool: &DbPool) -> Result<StuckCloneRecovery> {
+    let stuck_clones = sqlx::query(
+        r#"
+        SELECT full_name FROM repos WHERE clone_status = ?1
+        "#,
+    )
+    .bind(CloneStatus::Cloning.as_str())
+    .fetch_all(pool)
+    .await
+    .context("failed to query stuck clones")?;
+
+    let mut recovered_repos = Vec::new();
+    let mut failed_repos = Vec::new();
+
+    for row in stuck_clones {
+        let full_name: String = row.get("full_name");
+        match update_repo_clone_status(
+            pool,
+            &full_name,
+            CloneStatus::Failed,
+            Some("Clone interrupted by service restart"),
+        )
+        .await
+        {
+            Ok(()) => recovered_repos.push(full_name),
+            Err(err) => failed_repos.push((full_name, err.to_string())),
+        }
+    }
+
+    Ok(StuckCloneRecovery {
+        recovered_repos,
+        failed_repos,
+    })
 }
 
 /// Delete a repository by its full name

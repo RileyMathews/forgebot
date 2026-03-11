@@ -33,7 +33,7 @@ pub async fn remove_repository(
         .with_context(|| format!("failed to list sessions for repo: {}", full_name))?;
 
     // b) Delete webhook (required - failure aborts the removal process)
-    let expected_url = format_webhook_url(config);
+    let expected_url = crate::config::webhook_url(config);
     let webhooks = forgejo
         .list_repo_webhooks(full_name)
         .await
@@ -155,17 +155,12 @@ pub async fn remove_repository(
     Ok(())
 }
 
-/// Format the webhook URL from config
-fn format_webhook_url(config: &Arc<Config>) -> String {
-    format!("{}/webhook", config.server.forgebot_host)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_format_webhook_url() {
+    fn test_webhook_url() {
         let config = Arc::new(Config {
             server: crate::config::ServerConfig {
                 host: "127.0.0.1".to_string(),
@@ -190,7 +185,7 @@ mod tests {
             },
         });
 
-        let url = format_webhook_url(&config);
+        let url = crate::config::webhook_url(&config);
         assert_eq!(url, "http://example.com/webhook");
     }
 }
