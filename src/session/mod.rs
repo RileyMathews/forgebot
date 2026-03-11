@@ -13,6 +13,41 @@ pub enum SessionAction {
     Revision,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionMode {
+    Collab,
+    Build,
+}
+
+impl SessionMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Collab => "collab",
+            Self::Build => "build",
+        }
+    }
+
+    pub fn action(self) -> SessionAction {
+        match self {
+            Self::Collab => SessionAction::Plan,
+            Self::Build => SessionAction::Build,
+        }
+    }
+}
+
+impl std::str::FromStr for SessionMode {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "collab" => Ok(Self::Collab),
+            "build" => Ok(Self::Build),
+            _ => anyhow::bail!("Unknown session mode: {}", value),
+        }
+    }
+}
+
 impl SessionAction {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -34,6 +69,13 @@ impl SessionAction {
         match self {
             Self::Plan => "plan",
             Self::Build | Self::Revision => "build",
+        }
+    }
+
+    pub fn session_mode(self) -> SessionMode {
+        match self {
+            Self::Plan => SessionMode::Collab,
+            Self::Build | Self::Revision => SessionMode::Build,
         }
     }
 }
@@ -236,10 +278,10 @@ fn sanitize_for_session_id(s: &str) -> String {
         .collect()
 }
 
-/// Build the prompt for opencode based on the phase
+/// Build the prompt for opencode based on the session action
 ///
 /// # Arguments
-/// * `phase` - The phase: "plan", "build", or "revision"
+/// * `phase` - The action: collab (`plan`), `build`, or `revision`
 /// * `issue` - The issue being worked on
 /// * `issue_comments` - All comments on the issue
 /// * `pr_review_comments` - PR review comments (for revision phase)
@@ -275,13 +317,18 @@ Issue Body:
 Issue Comments:
 {comments}
 
-Your task: Analyze this issue and post a plan as a comment. The plan should outline:
-1. Understanding of the problem or feature request
-2. Proposed approach to solve/implement
-3. Any questions or clarifications needed
-4. Estimated complexity or effort
+You are in collaboration mode.
 
-Post your plan as a comment on this issue using the comment-issue tool."#,
+Your task:
+1. Discuss the issue as a collaborator and clarify requirements
+2. Ask focused follow-up questions when details are missing
+3. Propose one or more implementation approaches with tradeoffs
+4. Suggest a concrete next step the user can take
+
+Do not create commits or open a pull request in this mode.
+When the user is ready for implementation, they can trigger @forgebot with --build.
+
+Post your response as a comment on this issue using the comment-issue tool."#,
         issue_number = issue.number,
         title = issue.title,
         body = issue.body.as_deref().unwrap_or("(no body)"),
@@ -308,7 +355,7 @@ Issue Body:
 Issue Comments:
 {comments}
 
-You have a plan for this issue. Your task: Implement the solution and open a pull request.
+Build mode is active. Your task: Implement the solution and open a pull request.
 
 1. Review the issue and any comments for context
 2. Make the necessary code changes in the worktree
@@ -498,7 +545,9 @@ mod tests {
         assert!(prompt.contains("Second comment with more context"));
         assert!(prompt.contains("testuser"));
         assert!(prompt.contains("anotheruser"));
-        assert!(prompt.contains("Your task: Analyze this issue and post a plan"));
+        assert!(prompt.contains("You are in collaboration mode"));
+        assert!(prompt.contains("Do not create commits or open a pull request"));
+        assert!(prompt.contains("@forgebot with --build"));
     }
 
     #[test]
@@ -509,7 +558,7 @@ mod tests {
 
         // Check for key components
         assert!(prompt.contains("issue #42"));
-        assert!(prompt.contains("You have a plan for this issue"));
+        assert!(prompt.contains("Build mode is active"));
         assert!(prompt.contains("Your task: Implement the solution"));
         assert!(prompt.contains("open a pull request"));
     }
@@ -585,6 +634,21 @@ mod tests {
         assert_eq!(SessionAction::Plan.agent_mode(), "plan");
         assert_eq!(SessionAction::Build.agent_mode(), "build");
         assert_eq!(SessionAction::Revision.agent_mode(), "build");
+    }
+
+    #[test]
+    fn test_session_mode_mappings() {
+        assert_eq!(SessionMode::Collab.as_str(), "collab");
+        assert_eq!(SessionMode::Build.as_str(), "build");
+
+        assert_eq!(SessionMode::Collab.action(), SessionAction::Plan);
+        assert_eq!(SessionMode::Build.action(), SessionAction::Build);
+
+        assert_eq!(
+            "collab".parse::<SessionMode>().unwrap(),
+            SessionMode::Collab
+        );
+        assert_eq!("build".parse::<SessionMode>().unwrap(), SessionMode::Build);
     }
 
     #[test]

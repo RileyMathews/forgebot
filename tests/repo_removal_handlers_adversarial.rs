@@ -62,6 +62,7 @@ async fn insert_test_session(
         opencode_session_id: format!("opencode-{}", issue_id),
         worktree_path: worktree_path.to_string(),
         state: state.to_string(),
+        mode: "collab".to_string(),
     };
 
     insert_session(pool, &session).await?;
@@ -416,6 +417,7 @@ async fn test_all_valid_states_recognized_by_handler() {
             opencode_session_id: format!("opencode-{}", i),
             worktree_path: "/tmp/worktree".to_string(),
             state: state.to_string(),
+            mode: "collab".to_string(),
         };
 
         insert_session(&pool, &session)

@@ -11,6 +11,7 @@ use crate::db::{
     DbPool, NewSession, Session, get_sessions_in_state, insert_session, update_session_state,
 };
 use crate::forgejo::ForgejoClient;
+use crate::forgejo::models::{Issue, IssueComment, PullRequestReviewComment};
 use crate::session::env_loader;
 use crate::session::worktree;
 use crate::session::{
@@ -479,6 +480,123 @@ async fn capture_opencode_session_id(binary: &str, title: &str) -> Result<Option
     }
 }
 
+struct IssueContext {
+    issue: Issue,
+    issue_comments: Vec<IssueComment>,
+    pr_review_comments: Vec<PullRequestReviewComment>,
+}
+
+async fn fetch_issue_context(
+    forgejo: &ForgejoClient,
+    trigger: &SessionTrigger,
+) -> Result<IssueContext> {
+    let issue = forgejo
+        .get_issue(&trigger.repo_full_name, trigger.issue_id)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to fetch issue {} for repo {}",
+                trigger.issue_id, trigger.repo_full_name
+            )
+        })?;
+
+    let issue_comments = match forgejo
+        .list_issue_comments(&trigger.repo_full_name, trigger.issue_id)
+        .await
+    {
+        Ok(comments) => comments,
+        Err(e) => {
+            warn!(
+                "Failed to fetch issue comments for {}: {}",
+                trigger.issue_id, e
+            );
+            Vec::new()
+        }
+    };
+
+    let pr_review_comments = if trigger.action == SessionAction::Revision {
+        if let Some(pr_id) = trigger.pr_id {
+            match forgejo
+                .list_pr_review_comments(&trigger.repo_full_name, pr_id)
+                .await
+            {
+                Ok(comments) => comments,
+                Err(e) => {
+                    warn!("Failed to fetch PR review comments for PR {}: {}", pr_id, e);
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+
+    Ok(IssueContext {
+        issue,
+        issue_comments,
+        pr_review_comments,
+    })
+}
+
+async fn get_or_create_session(
+    db: &DbPool,
+    trigger: &SessionTrigger,
+    session_id: &str,
+    worktree_path: &Path,
+    existing_session: Option<Session>,
+) -> Result<Session> {
+    if let Some(session) = existing_session {
+        return Ok(session);
+    }
+
+    let new_session = NewSession {
+        id: uuid::Uuid::new_v4().to_string(),
+        repo_full_name: trigger.repo_full_name.clone(),
+        issue_id: trigger.issue_id as i64,
+        pr_id: trigger.pr_id.map(|id| id as i64),
+        opencode_session_id: session_id.to_string(),
+        worktree_path: worktree_path.display().to_string(),
+        state: SessionState::Idle.as_str().to_string(),
+        mode: trigger.action.session_mode().as_str().to_string(),
+    };
+    insert_session(db, &new_session).await?;
+
+    crate::db::get_session_by_issue(db, &trigger.repo_full_name, trigger.issue_id as i64)
+        .await?
+        .ok_or_else(|| anyhow!("Failed to retrieve newly created session"))
+}
+
+async fn post_acknowledgement(forgejo: &ForgejoClient, trigger: &SessionTrigger, session_id: &str) {
+    let ack_msg = match trigger.action {
+        SessionAction::Plan => format!(
+            "🤖 forgebot is joining the discussion on this issue.\n\nSession: `{}`",
+            session_id
+        ),
+        SessionAction::Build => format!(
+            "🤖 forgebot is implementing this issue and preparing a PR.\n\nSession: `{}`",
+            session_id
+        ),
+        SessionAction::Revision => format!(
+            "🤖 forgebot is addressing review comments. Revising...\n\nSession: `{}`",
+            session_id
+        ),
+    };
+
+    if let Err(e) = forgejo
+        .post_issue_comment(&trigger.repo_full_name, trigger.issue_id, &ack_msg)
+        .await
+    {
+        warn!(
+            repo = %trigger.repo_full_name,
+            issue_id = %trigger.issue_id,
+            err = %e,
+            "Failed to post acknowledgement comment"
+        );
+    }
+}
+
 /// Main session orchestration function.
 ///
 /// This is called from webhook handlers to dispatch a new session.
@@ -509,51 +627,8 @@ pub async fn dispatch_session(
         "Dispatching session"
     );
 
-    // 1. Fetch issue details from Forgejo
-    let issue = forgejo
-        .get_issue(&trigger.repo_full_name, trigger.issue_id)
-        .await
-        .with_context(|| {
-            format!(
-                "failed to fetch issue {} for repo {}",
-                trigger.issue_id, trigger.repo_full_name
-            )
-        })?;
-
-    // 2. Fetch issue comments
-    let issue_comments = match forgejo
-        .list_issue_comments(&trigger.repo_full_name, trigger.issue_id)
-        .await
-    {
-        Ok(comments) => comments,
-        Err(e) => {
-            warn!(
-                "Failed to fetch issue comments for {}: {}",
-                trigger.issue_id, e
-            );
-            Vec::new()
-        }
-    };
-
-    // 3. Fetch PR review comments if in revision phase
-    let pr_review_comments = if trigger.action == SessionAction::Revision {
-        if let Some(pr_id) = trigger.pr_id {
-            match forgejo
-                .list_pr_review_comments(&trigger.repo_full_name, pr_id)
-                .await
-            {
-                Ok(comments) => comments,
-                Err(e) => {
-                    warn!("Failed to fetch PR review comments for PR {}: {}", pr_id, e);
-                    Vec::new()
-                }
-            }
-        } else {
-            Vec::new()
-        }
-    } else {
-        Vec::new()
-    };
+    // 1. Fetch issue context from Forgejo
+    let issue_context = fetch_issue_context(forgejo, &trigger).await?;
 
     // 4. Check if session already exists
     let existing_session =
@@ -596,9 +671,9 @@ pub async fn dispatch_session(
     // 6. Build prompt
     let prompt = build_prompt(
         trigger.action,
-        &issue,
-        &issue_comments,
-        &pr_review_comments,
+        &issue_context.issue,
+        &issue_context.issue_comments,
+        &issue_context.pr_review_comments,
         trigger.pr_id,
     );
 
@@ -695,56 +770,11 @@ Error output: {}",
     };
 
     // 9. Get or create session record
-    let session_record: Session;
-    if let Some(session) = existing_session {
-        session_record = session;
-    } else {
-        // Create new session
-        let new_session = NewSession {
-            id: uuid::Uuid::new_v4().to_string(),
-            repo_full_name: trigger.repo_full_name.clone(),
-            issue_id: trigger.issue_id as i64,
-            pr_id: trigger.pr_id.map(|id| id as i64),
-            opencode_session_id: session_id.clone(),
-            worktree_path: worktree_path.display().to_string(),
-            state: SessionState::Idle.as_str().to_string(),
-        };
-        insert_session(db, &new_session).await?;
-
-        session_record =
-            crate::db::get_session_by_issue(db, &trigger.repo_full_name, trigger.issue_id as i64)
-                .await?
-                .ok_or_else(|| anyhow!("Failed to retrieve newly created session"))?;
-    }
+    let session_record =
+        get_or_create_session(db, &trigger, &session_id, &worktree_path, existing_session).await?;
 
     // 10. Post acknowledgement comment
-    let ack_msg = match trigger.action {
-        SessionAction::Plan => format!(
-            "🤖 forgebot is starting to work on this issue. Creating plan...\n\nSession: `{}`",
-            session_id
-        ),
-        SessionAction::Build => format!(
-            "🤖 forgebot is implementing the plan. Building...\n\nSession: `{}`",
-            session_id
-        ),
-        SessionAction::Revision => format!(
-            "🤖 forgebot is addressing review comments. Revising...\n\nSession: `{}`",
-            session_id
-        ),
-    };
-
-    if let Err(e) = forgejo
-        .post_issue_comment(&trigger.repo_full_name, trigger.issue_id, &ack_msg)
-        .await
-    {
-        warn!(
-            repo = %trigger.repo_full_name,
-            issue_id = %trigger.issue_id,
-            session_id = %session_record.id,
-            err = %e,
-            "Failed to post acknowledgement comment"
-        );
-    }
+    post_acknowledgement(forgejo, &trigger, &session_id).await;
 
     // 11. Update session state
     update_session_state(db, &session_record.id, new_state).await?;
@@ -817,7 +847,7 @@ Error output: {}",
 
             let success_msg = match trigger.action {
                 SessionAction::Plan => {
-                    "✅ Plan created successfully! Check the comments above for the plan details."
+                    "✅ Collaboration update posted. Add `--build` in a @forgebot comment when you're ready for implementation and PR creation."
                 }
                 SessionAction::Build => {
                     "✅ Implementation complete! A pull request has been created."
