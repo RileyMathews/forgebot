@@ -240,6 +240,25 @@ in
       description = "opencode agent integration settings.";
     };
 
+    opencodeWebServer = lib.mkOption {
+      type = lib.types.submodule {
+        options = {
+          enabled = lib.mkEnableOption "opencode web server service";
+
+          port = lib.mkOption {
+            type = lib.types.port;
+            default = 4096;
+            example = 4096;
+            description = ''
+              TCP port for the opencode web server (`opencode serve`).
+            '';
+          };
+        };
+      };
+      default = { };
+      description = "Optional opencode web server configuration.";
+    };
+
     # =============================================================================
     # Database configuration
     # =============================================================================
@@ -270,6 +289,12 @@ in
         [ cfg.package pkgs.git ]
         ++ lib.optional (cfg.opencodePackage != null) cfg.opencodePackage
       );
+
+      opencodeBinary =
+        if cfg.opencode.binary == "opencode" && cfg.opencodePackage != null then
+          "${cfg.opencodePackage}/bin/opencode"
+        else
+          cfg.opencode.binary;
     in
     {
       # Create the forgebot user
@@ -405,7 +430,7 @@ in
             "FORGEBOT_SERVER_PORT=${toString cfg.server.port}"
             "FORGEBOT_FORGEJO_URL=${cfg.forgejo.url}"
             "FORGEBOT_FORGEJO_BOT_USERNAME=${cfg.forgejo.botUsername}"
-            "FORGEBOT_OPENCODE_BINARY=${if cfg.opencode.binary == "opencode" && cfg.opencodePackage != null then "${cfg.opencodePackage}/bin/opencode" else cfg.opencode.binary}"
+            "FORGEBOT_OPENCODE_BINARY=${opencodeBinary}"
             "FORGEBOT_OPENCODE_WORKTREE_BASE=${cfg.opencode.worktreeBase}"
             "FORGEBOT_OPENCODE_CONFIG_DIR=${cfg.dataDir}/config/opencode/.opencode"
             "FORGEBOT_OPENCODE_MODEL=${cfg.opencode.model}"
@@ -429,6 +454,58 @@ in
           EnvironmentFile = lib.optional (cfg.secretsFilePath != null) cfg.secretsFilePath;
 
           # Graceful shutdown
+          TimeoutStopSec = 30;
+          KillSignal = "SIGTERM";
+        };
+      };
+
+      systemd.services.forgebot-opencode-web = lib.mkIf cfg.opencodeWebServer.enabled {
+        description = "Opencode web server for forgebot";
+        wantedBy = [ "multi-user.target" ];
+        after = [ "network-online.target" "forgebot.service" ];
+        wants = [ "network-online.target" ];
+        requires = [ "forgebot.service" ];
+
+        serviceConfig = {
+          Type = "simple";
+
+          User = cfg.user;
+          Group = cfg.group;
+          WorkingDirectory = cfg.dataDir;
+
+          NoNewPrivileges = true;
+          ProtectSystem = "strict";
+          ProtectHome = true;
+          PrivateTmp = true;
+          PrivateDevices = true;
+          ProtectKernelTunables = true;
+          ProtectKernelModules = true;
+          ProtectControlGroups = true;
+          RestrictSUIDSGID = true;
+          RestrictRealtime = true;
+          RestrictNamespaces = true;
+          LockPersonality = true;
+          MemoryDenyWriteExecute = false;
+
+          ReadWritePaths = [ cfg.dataDir ];
+
+          ExecStart = "${opencodeBinary} serve --hostname 0.0.0.0 --port ${toString cfg.opencodeWebServer.port}";
+
+          Restart = "on-failure";
+          RestartSec = 10;
+          StartLimitInterval = 60;
+          StartLimitBurst = 3;
+
+          Environment = [
+            "PATH=${servicePath}:/run/current-system/sw/bin:/usr/bin:/bin"
+            "HOME=${cfg.dataDir}"
+            "XDG_DATA_HOME=${cfg.dataDir}/data"
+            "XDG_CONFIG_HOME=${cfg.dataDir}/config"
+            "XDG_CACHE_HOME=${cfg.dataDir}/cache"
+            "BUN_INSTALL_CACHE_DIR=${cfg.dataDir}/cache/bun"
+            "OPENCODE_CONFIG_DIR=${cfg.dataDir}/config/opencode/.opencode"
+          ];
+
           TimeoutStopSec = 30;
           KillSignal = "SIGTERM";
         };

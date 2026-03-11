@@ -88,6 +88,10 @@ services.forgebot = {
   server.host = "127.0.0.1";
   server.port = 8765;
   server.forgeBotHost = null;  # Set to public URL for production (e.g., "https://forgebot.example.com")
+
+  # Optional - run opencode as a host web service
+  opencodeWebServer.enabled = true;
+  opencodeWebServer.port = 4096;
   forgejo.url = "https://git.example.com";
   
   # Required - path to secrets file
