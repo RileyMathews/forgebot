@@ -828,7 +828,7 @@ async fn handle_dispatch_success(
 
     let success_msg = match trigger.action {
         SessionAction::Plan => {
-            "✅ Collaboration update posted. Add `--build` in a @forgebot comment when you're ready for implementation and PR creation."
+            "✅ Collaboration update posted. Add the build flag in a @forgebot comment when you're ready for implementation and PR creation."
         }
         SessionAction::Build => "✅ Implementation complete! A pull request has been created.",
         SessionAction::Revision => "✅ Review comments addressed and changes pushed.",
