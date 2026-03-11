@@ -11,6 +11,7 @@ use axum::{
 };
 use bytes::Bytes;
 use hmac::{Hmac, Mac};
+use serde::de::DeserializeOwned;
 use sha2::Sha256;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
@@ -155,6 +156,19 @@ pub async fn extract_and_verify_body(
     Ok((bytes, event_type))
 }
 
+fn parse_webhook_payload<T: DeserializeOwned>(body: &Bytes) -> serde_json::Result<T> {
+    serde_json::from_slice(body)
+}
+
+fn invalid_json_response(event_type: &str, error: &serde_json::Error) -> Response {
+    error!(event_type = %event_type, err = %error, "Failed to parse webhook payload");
+    // Response::builder() with standard strings cannot fail; unwrap is safe
+    Response::builder()
+        .status(StatusCode::BAD_REQUEST)
+        .body(format!("Invalid JSON: {}", error).into())
+        .unwrap()
+}
+
 /// Handler for POST /webhook
 async fn webhook_handler(State(state): State<AppState>, request: Request) -> Response {
     // Create verifier
@@ -171,16 +185,9 @@ async fn webhook_handler(State(state): State<AppState>, request: Request) -> Res
     // Dispatch based on event type
     match event_type.as_str() {
         "issue_comment" => {
-            let payload: IssueCommentPayload = match serde_json::from_slice(&body) {
-                Ok(p) => p,
-                Err(e) => {
-                    error!("Failed to parse issue_comment payload: {}", e);
-                    // Response::builder() with standard strings cannot fail; unwrap is safe
-                    return Response::builder()
-                        .status(StatusCode::BAD_REQUEST)
-                        .body(format!("Invalid JSON: {}", e).into())
-                        .unwrap();
-                }
+            let payload: IssueCommentPayload = match parse_webhook_payload(&body) {
+                Ok(payload) => payload,
+                Err(error) => return invalid_json_response(event_type.as_str(), &error),
             };
             match handlers::handle_issue_comment(payload, &state.db, &state.forgejo, &state.config)
                 .await
@@ -190,16 +197,9 @@ async fn webhook_handler(State(state): State<AppState>, request: Request) -> Res
             }
         }
         "pull_request" => {
-            let payload: PullRequestPayload = match serde_json::from_slice(&body) {
-                Ok(p) => p,
-                Err(e) => {
-                    error!("Failed to parse pull_request payload: {}", e);
-                    // Response::builder() with standard strings cannot fail; unwrap is safe
-                    return Response::builder()
-                        .status(StatusCode::BAD_REQUEST)
-                        .body(format!("Invalid JSON: {}", e).into())
-                        .unwrap();
-                }
+            let payload: PullRequestPayload = match parse_webhook_payload(&body) {
+                Ok(payload) => payload,
+                Err(error) => return invalid_json_response(event_type.as_str(), &error),
             };
             match handlers::handle_pull_request(payload, &state.db, &state.forgejo, &state.config)
                 .await
@@ -209,16 +209,9 @@ async fn webhook_handler(State(state): State<AppState>, request: Request) -> Res
             }
         }
         "pull_request_review_comment" => {
-            let payload: PullRequestReviewCommentPayload = match serde_json::from_slice(&body) {
-                Ok(p) => p,
-                Err(e) => {
-                    error!("Failed to parse pull_request_review_comment payload: {}", e);
-                    // Response::builder() with standard strings cannot fail; unwrap is safe
-                    return Response::builder()
-                        .status(StatusCode::BAD_REQUEST)
-                        .body(format!("Invalid JSON: {}", e).into())
-                        .unwrap();
-                }
+            let payload: PullRequestReviewCommentPayload = match parse_webhook_payload(&body) {
+                Ok(payload) => payload,
+                Err(error) => return invalid_json_response(event_type.as_str(), &error),
             };
             match handlers::handle_pull_request_review_comment(
                 payload,
