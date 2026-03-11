@@ -65,7 +65,7 @@ async fn make_test_app() -> Result<(axum::Router, PathBuf)> {
         &config.forgejo.url,
         &config.forgejo.token,
         &config.forgejo.bot_username,
-    )?;
+    );
     let state = AppState::new(Arc::new(config), db, forgejo, 1, "forgebot".to_string());
 
     Ok((create_app_router(state), temp_dir))

@@ -11,7 +11,7 @@ forgebot acts as a webhook receiver and session manager. When you mention `@forg
 Before installing forgebot, ensure you have:
 
 - A running **Forgejo instance** (self-hosted or compatible)
-- **opencode** installed and available in your `PATH` (requires [bun](https://bun.sh/) for tool dependencies)
+- **opencode** installed and available in your `PATH`
 - **NixOS** or **Linux** — NixOS is the primary deployment target; other Linux distributions work via manual binary deployment
 - **Nix** with flakes enabled (if using the Nix environment loader feature)
 - **Git** installed (for worktree management)

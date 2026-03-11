@@ -22,7 +22,8 @@ impl ForgejoClient {
         let client = Client::builder()
             .user_agent("forgebot")
             .build()
-            .context("Failed to build HTTP client").expect("should be able to build forgejo client");
+            .context("Failed to build HTTP client")
+            .expect("should be able to build forgejo client");
 
         // Ensure base_url doesn't have trailing slash
         let base_url = base_url.trim_end_matches('/').to_string();

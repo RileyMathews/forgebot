@@ -31,7 +31,7 @@ async fn test_list_webhooks() {
     };
 
     let client =
-        ForgejoClient::new(&url, &token, "forgebot-test").expect("Failed to create client");
+        ForgejoClient::new(&url, &token, "forgebot-test");
 
     println!("Testing list_repo_webhooks on {}/{}...", url, repo);
 
@@ -62,7 +62,7 @@ async fn test_check_token_permissions() {
     };
 
     let client =
-        ForgejoClient::new(&url, &token, "forgebot-test").expect("Failed to create client");
+        ForgejoClient::new(&url, &token, "forgebot-test");
 
     println!("Testing check_token_permissions on {}/{}...", url, repo);
 
@@ -95,7 +95,7 @@ async fn test_get_issue() {
         .unwrap_or(1);
 
     let client =
-        ForgejoClient::new(&url, &token, "forgebot-test").expect("Failed to create client");
+        ForgejoClient::new(&url, &token, "forgebot-test");
 
     println!(
         "Testing get_issue on {}/{} issue #{}...",
@@ -129,7 +129,7 @@ async fn test_list_issue_comments() {
         .unwrap_or(1);
 
     let client =
-        ForgejoClient::new(&url, &token, "forgebot-test").expect("Failed to create client");
+        ForgejoClient::new(&url, &token, "forgebot-test");
 
     println!(
         "Testing list_issue_comments on {}/{} issue #{}...",
@@ -167,7 +167,7 @@ async fn test_create_and_delete_webhook() {
         .unwrap_or_else(|_| "https://example.com/webhook".to_string());
 
     let client =
-        ForgejoClient::new(&url, &token, "forgebot-test").expect("Failed to create client");
+        ForgejoClient::new(&url, &token, "forgebot-test");
 
     println!("Testing create_repo_webhook on {}/{}...", url, repo);
 

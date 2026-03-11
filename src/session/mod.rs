@@ -360,7 +360,8 @@ Your task:
 This run is headless (no interactive human chat).
 Do not provide your deliverable as a plain assistant response.
 
-Post your response as a comment on this issue using the comment-issue tool with explicit arguments: repo={repo}, issue_id={issue_id}."#,
+Post your response as a comment on this issue using Forgejo MCP tools.
+Split repo={repo} into owner/repo and use issue index={issue_id}."#,
         repo = context.repo_full_name,
         issue_id = context.issue_id,
         pr_id = context
@@ -411,7 +412,7 @@ Build mode is active. Your task: Implement the solution and open a pull request.
 1. Review the issue and any comments for context
 2. Make the necessary code changes in the worktree
 3. Commit your changes with a meaningful commit message
-4. Create a pull request using the create-pr tool
+4. Create a pull request using Forgejo MCP tools
 5. Link the PR to this issue in the description
 
 Use explicit tool arguments for every Forgejo operation.
@@ -419,11 +420,12 @@ Use explicit tool arguments for every Forgejo operation.
 This run is headless (no interactive human chat).
 Do not provide your deliverable as a plain assistant response.
 
-When creating the PR, set create-pr arguments to:
-- repo={repo}
-- issue_id={issue_id}
+When creating the PR via Forgejo MCP, set arguments to:
+- owner/repo parsed from repo={repo}
 - head={work_branch}
-- base={base_branch}"#,
+- base={base_branch}
+
+The PR body must include `Closes #{issue_id}` on its own line."#,
         repo = context.repo_full_name,
         issue_id = context.issue_id,
         pr_id = context

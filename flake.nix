@@ -146,26 +146,63 @@
         default = self.homeManagerModules.forgebot;
       };
     }
-    // flake-utils.lib.eachSystem supportedSystems (system: {
-      packages = {
-        forgebot = mkPackage system;
-        default = mkPackage system;
-      };
-
-      devShells = {
-        default = mkDevShell system;
-      };
-
-      # Apps for `nix run`
-      apps = {
-        forgebot = {
-          type = "app";
-          program = "${mkPackage system}/bin/forgebot";
+    // flake-utils.lib.eachSystem supportedSystems (
+      system:
+      let
+        pkgs = import nixpkgs {
+          inherit system;
+          overlays = [ ];
         };
-        default = {
-          type = "app";
-          program = "${mkPackage system}/bin/forgebot";
+
+        forgebot-pkg = mkPackage system;
+        forgejo-mcp-pkg = pkgs.buildGoModule {
+          pname = "forgejo-mcp";
+          version = "2.15.0";
+          src = pkgs.fetchzip {
+            url = "https://codeberg.org/goern/forgejo-mcp/archive/v2.15.0.tar.gz";
+            hash = "sha256-QFpGGmAl94vppOkMm+w4GQ1/bLtvkpWXG8JgBQJGvfw=";
+          };
+          vendorHash = "sha256-j5o/FZBowQvcatw14Fvs/8CTM5ZtQR6kwlroctaeKuM=";
+          ldflags = [
+            "-s"
+            "-w"
+            "-X"
+            "main.Version=2.15.0"
+          ];
+          doCheck = false;
+
+          meta = with pkgs.lib; {
+            description = "MCP server for Forgejo";
+            homepage = "https://codeberg.org/goern/forgejo-mcp";
+            license = licenses.agpl3Only;
+            maintainers = [ ];
+            platforms = platforms.unix;
+            mainProgram = "forgejo-mcp";
+          };
         };
-      };
-    });
+      in
+      {
+        packages = {
+          forgebot = forgebot-pkg;
+          forgejo-mcp = forgejo-mcp-pkg;
+          default = forgebot-pkg;
+        };
+
+        devShells = {
+          default = mkDevShell system;
+        };
+
+        # Apps for `nix run`
+        apps = {
+          forgebot = {
+            type = "app";
+            program = "${forgebot-pkg}/bin/forgebot";
+          };
+          default = {
+            type = "app";
+            program = "${forgebot-pkg}/bin/forgebot";
+          };
+        };
+      }
+    );
 }

@@ -1,4 +1,24 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "permission": "allow"
+  "permission": "allow",
+  "mcp": {
+    "forgejo": {
+      "type": "local",
+      "enabled": true,
+      "timeout": 15000,
+      "command": [
+        "forgejo-mcp",
+        "--transport",
+        "stdio",
+        "--url",
+        "{env:FORGEBOT_FORGEJO_URL}",
+        "--debug=false"
+      ],
+      "environment": {
+        "FORGEJO_URL": "{env:FORGEBOT_FORGEJO_URL}",
+        "FORGEJO_ACCESS_TOKEN": "{env:FORGEBOT_FORGEJO_TOKEN}",
+        "FORGEJO_USER_AGENT": "forgebot"
+      }
+    }
+  }
 }

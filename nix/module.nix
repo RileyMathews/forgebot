@@ -44,6 +44,13 @@ in
       description = "The opencode package to make available in the service PATH. Defaults to the opencode flake bundled with forgebot. If null, opencode must be available in the system PATH or configured with an absolute path in forgebot.toml.";
     };
 
+    forgejoMcpPackage = lib.mkOption {
+      type = lib.types.nullOr lib.types.package;
+      default = self.packages.${pkgs.stdenv.hostPlatform.system}.forgejo-mcp or null;
+      defaultText = lib.literalExpression "self.packages.\${pkgs.stdenv.hostPlatform.system}.forgejo-mcp or null";
+      description = "The forgejo-mcp package to make available in the service PATH. Defaults to the package bundled by this flake. If null, forgejo-mcp must be available in the system PATH.";
+    };
+
     secretsFilePath = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
       default = null;
@@ -191,7 +198,7 @@ in
             example = "/var/lib/forgebot/opencode-config";
             description = ''
               Directory for opencode configuration files.
-              forgebot populates this with package.json, agent definitions, and tools.
+              forgebot populates this with package.json, opencode.json, and agent definitions.
               Do not modify these files manually — they are managed by forgebot.
             '';
           };
@@ -298,6 +305,7 @@ in
       servicePath = lib.makeBinPath (
         [ cfg.package pkgs.git ]
         ++ lib.optional (cfg.opencodePackage != null) cfg.opencodePackage
+        ++ lib.optional (cfg.forgejoMcpPackage != null) cfg.forgejoMcpPackage
       );
 
       opencodeBinary =
@@ -372,7 +380,7 @@ in
           chmod 644 ${cfg.dataDir}/config/opencode/opencode.json
           chown ${cfg.user}:${cfg.group} ${cfg.dataDir}/config/opencode/opencode.json
 
-          # Link forgebot's custom opencode config (agents, tools, etc.) to the XDG config dir
+          # Link forgebot's managed opencode config to the XDG config dir
           # This makes them available to opencode via OPENCODE_CONFIG_DIR
           if [ -d "${cfg.opencode.configDir}" ]; then
             mkdir -p ${cfg.dataDir}/config/opencode/.opencode
@@ -456,7 +464,7 @@ in
             "XDG_CONFIG_HOME=${cfg.dataDir}/config"
             "XDG_CACHE_HOME=${cfg.dataDir}/cache"
             "BUN_INSTALL_CACHE_DIR=${cfg.dataDir}/cache/bun"
-            # Opencode-specific config directory (for custom agents/tools)
+            # Opencode-specific config directory (for managed agent/config files)
             "OPENCODE_CONFIG_DIR=${cfg.dataDir}/config/opencode/.opencode"
           ] 
           ++ lib.optional (cfg.server.forgeBotHost != null) "FORGEBOT_FORGEBOT_HOST=${cfg.server.forgeBotHost}"
@@ -511,12 +519,15 @@ in
           Environment = [
             "PATH=${servicePath}:/run/current-system/sw/bin:/usr/bin:/bin"
             "HOME=${cfg.dataDir}"
+            "FORGEBOT_FORGEJO_URL=${cfg.forgejo.url}"
             "XDG_DATA_HOME=${cfg.dataDir}/data"
             "XDG_CONFIG_HOME=${cfg.dataDir}/config"
             "XDG_CACHE_HOME=${cfg.dataDir}/cache"
             "BUN_INSTALL_CACHE_DIR=${cfg.dataDir}/cache/bun"
             "OPENCODE_CONFIG_DIR=${cfg.dataDir}/config/opencode/.opencode"
           ];
+
+          EnvironmentFile = lib.optional (cfg.secretsFilePath != null) cfg.secretsFilePath;
 
           TimeoutStopSec = 30;
           KillSignal = "SIGTERM";

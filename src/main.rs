@@ -1,4 +1,3 @@
-use anyhow::{Context, Result};
 use forgebot::{config, db, forgejo, session, webhook};
 use std::sync::Arc;
 use tracing::{Level, error, info, warn};
@@ -10,8 +9,7 @@ async fn main() -> () {
     let subscriber = FmtSubscriber::builder()
         .with_max_level(Level::INFO)
         .finish();
-    tracing::subscriber::set_global_default(subscriber)
-        .expect("Failed to set tracing subscriber");
+    tracing::subscriber::set_global_default(subscriber).expect("Failed to set tracing subscriber");
 
     info!("forgebot starting");
 
@@ -24,7 +22,8 @@ async fn main() -> () {
 
     // Ensure worktree base directory exists
     tokio::fs::create_dir_all(&config.opencode.worktree_base)
-        .await.expect("could not create opencode worktree dir");
+        .await
+        .expect("could not create opencode worktree dir");
 
     info!(
         config_dir = %config.opencode.config_dir.display(),
@@ -66,7 +65,8 @@ async fn main() -> () {
 
     // Initialize database
     let db_pool = db::init_db(&config.database)
-        .await.expect("Database should be able to initialize");
+        .await
+        .expect("Database should be able to initialize");
 
     info!("Database initialized successfully");
 
@@ -164,6 +164,4 @@ async fn main() -> () {
 
     // Close the database pool gracefully
     db_pool.close().await;
-
-    ()
 }
