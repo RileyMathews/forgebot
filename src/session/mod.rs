@@ -69,10 +69,7 @@ impl SessionAction {
     }
 
     pub fn agent_mode(self) -> &'static str {
-        match self {
-            Self::Plan => "plan",
-            Self::Build | Self::Revision => "build",
-        }
+        "forgebot"
     }
 
     pub fn session_mode(self) -> SessionMode {
@@ -350,17 +347,18 @@ Issue Body:
 Issue Comments:
 {comments}
 
-You are in collaboration mode.
+You are operating in a single issue-to-PR workflow.
 
 Your task:
-1. Discuss the issue as a collaborator and clarify requirements
-2. Ask focused follow-up questions when details are missing
-3. Propose one or more implementation approaches with tradeoffs
-4. Suggest a concrete next step the user can take
+1. Start by posting at least one concrete planning comment on this issue (approach, assumptions, tradeoffs)
+2. If you need guidance or have questions while planning, ask them in an issue comment and wait for a user reply
+3. After posting a planning comment, stop and wait for a new user comment before starting implementation
+4. On a later trigger, if requirements are clear, post a short issue comment that you are starting implementation
+5. Implement the solution, commit changes, and open a pull request linked to this issue
+6. Post a final issue comment with what was done and the PR link
 
-Do not create commits or open a pull request in this mode.
-
-When the user is ready for implementation, they can trigger @forgebot with --build.
+This run is headless (no interactive human chat).
+Do not provide your deliverable as a plain assistant response.
 
 Post your response as a comment on this issue using the comment-issue tool with explicit arguments: repo={repo}, issue_id={issue_id}."#,
         repo = context.repo_full_name,
@@ -417,6 +415,9 @@ Build mode is active. Your task: Implement the solution and open a pull request.
 5. Link the PR to this issue in the description
 
 Use explicit tool arguments for every Forgejo operation.
+
+This run is headless (no interactive human chat).
+Do not provide your deliverable as a plain assistant response.
 
 When creating the PR, set create-pr arguments to:
 - repo={repo}
@@ -475,6 +476,9 @@ Your task: Address these review comments and force-push an updated commit.
 3. Commit your changes
 4. Force-push the updated branch
 5. Verify all comments are addressed
+
+This run is headless (no interactive human chat).
+Do not provide your deliverable as a plain assistant response.
 
 Use explicit tool arguments for every Forgejo operation (repo/pr_id must match the context block)."#,
         repo = context.repo_full_name,
@@ -634,9 +638,10 @@ mod tests {
         assert!(prompt.contains("Second comment with more context"));
         assert!(prompt.contains("testuser"));
         assert!(prompt.contains("anotheruser"));
-        assert!(prompt.contains("You are in collaboration mode"));
-        assert!(prompt.contains("Do not create commits or open a pull request"));
-        assert!(prompt.contains("@forgebot with --build"));
+        assert!(prompt.contains("single issue-to-PR workflow"));
+        assert!(prompt.contains("planning comment"));
+        assert!(prompt.contains("starting implementation"));
+        assert!(prompt.contains("open a pull request"));
         assert!(prompt.contains("repo: alice/project"));
         assert!(prompt.contains("issue_id: 42"));
     }
@@ -746,9 +751,9 @@ mod tests {
         assert_eq!(SessionAction::Build.state(), SessionState::Building);
         assert_eq!(SessionAction::Revision.state(), SessionState::Revising);
 
-        assert_eq!(SessionAction::Plan.agent_mode(), "plan");
-        assert_eq!(SessionAction::Build.agent_mode(), "build");
-        assert_eq!(SessionAction::Revision.agent_mode(), "build");
+        assert_eq!(SessionAction::Plan.agent_mode(), "forgebot");
+        assert_eq!(SessionAction::Build.agent_mode(), "forgebot");
+        assert_eq!(SessionAction::Revision.agent_mode(), "forgebot");
     }
 
     #[test]

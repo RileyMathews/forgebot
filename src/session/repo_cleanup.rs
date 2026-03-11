@@ -8,6 +8,7 @@ use tracing::{info, warn};
 use crate::config::Config;
 use crate::db::{DbPool, delete_repo, get_sessions_for_repo};
 use crate::forgejo::ForgejoClient;
+use crate::session::opencode_api::{OpencodeApiClient, SessionStatus};
 use crate::session::worktree::{bare_clone_path, remove_worktree};
 
 /// Remove a repository and all associated data.
@@ -125,8 +126,8 @@ pub async fn remove_repository(
         }
     }
 
-    // e) Final check for active sessions immediately before DB deletion
-    // This minimizes the race condition window between the initial check and actual deletion
+    // e) Final OpenCode API status check immediately before DB deletion.
+    // Fail closed if status cannot be determined.
     let final_sessions = get_sessions_for_repo(db, full_name)
         .await
         .with_context(|| {
@@ -136,13 +137,39 @@ pub async fn remove_repository(
             )
         })?;
 
-    let has_active_sessions = final_sessions.iter().any(|s| s.state.is_busy());
-
-    if has_active_sessions {
-        anyhow::bail!(
-            "cannot delete repository {}: has active sessions in planning/building/revising state",
+    let api_client = OpencodeApiClient::from_config(&config.opencode.api).with_context(|| {
+        format!(
+            "cannot verify OpenCode session status for repo {}: API client init failed",
             full_name
-        );
+        )
+    })?;
+
+    for session in final_sessions {
+        let statuses = api_client
+            .session_status(PathBuf::from(&session.worktree_path).as_path())
+            .await
+            .with_context(|| {
+                format!(
+                    "cannot verify OpenCode session status for repo {} issue {}",
+                    full_name, session.issue_id
+                )
+            })?;
+
+        let preferred_status = statuses.get(session.opencode_session_id.trim());
+        let has_blocking_status = matches!(
+            preferred_status,
+            Some(SessionStatus::Busy | SessionStatus::Retry { .. })
+        ) || statuses
+            .values()
+            .any(|s| matches!(s, SessionStatus::Busy | SessionStatus::Retry { .. }));
+
+        if has_blocking_status {
+            anyhow::bail!(
+                "cannot delete repository {}: OpenCode reports an active session for issue {}",
+                full_name,
+                session.issue_id
+            );
+        }
     }
 
     // f) Delete repo from DB (last step, after all cleanup succeeds)
@@ -180,7 +207,6 @@ mod tests {
                 git_binary: "git".to_string(),
                 model: "opencode/kimi-k2.5".to_string(),
                 web_host: None,
-                transport: crate::config::OpencodeTransport::Cli,
                 api: crate::config::OpencodeApiConfig {
                     base_url: None,
                     token: None,

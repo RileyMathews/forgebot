@@ -1,18 +1,20 @@
 use axum::response::Response;
+use std::collections::HashSet;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
 use crate::config::Config;
 use crate::db::{
     DbPool, NewSession, Session, add_pending_worktree, get_repo_by_full_name, get_session_by_issue,
-    get_session_by_pr, insert_session, update_session_mode, update_session_pr_id,
+    get_session_by_pr, insert_session, update_session_pr_id,
 };
 use crate::forgejo::ForgejoClient;
 use crate::session::opencode::dispatch_session;
 use crate::session::worktree::{bare_clone_path, remove_worktree, worktree_path};
 use crate::session::{
-    SessionAction, SessionMode, SessionState, SessionTrigger, comment_text_busy,
-    comment_text_error, comment_text_no_context, comment_text_thinking, comment_text_working,
-    derive_session_id,
+    SessionAction, SessionMode, SessionState, SessionTrigger, comment_text_error,
+    comment_text_no_context, derive_session_id,
 };
 
 use super::models::*;
@@ -68,7 +70,6 @@ async fn post_pr_comment_non_blocking(
 
 enum IssueCommentSessionResult {
     Ready(Session),
-    Busy,
     ErrorLogged,
     CreationError,
 }
@@ -120,25 +121,6 @@ async fn load_or_create_issue_session(
         };
 
     if let Some(session) = existing_session {
-        if session.state.is_busy() {
-            info!(
-                "Session {} is busy (state: {}), posting busy comment",
-                session.id, session.state
-            );
-            let busy_msg = comment_text_busy();
-            if let Err(e) = forgejo
-                .post_issue_comment(
-                    &payload.repository.full_name,
-                    payload.issue.number,
-                    &busy_msg,
-                )
-                .await
-            {
-                error!("Failed to post busy comment: {}", e);
-            }
-            return IssueCommentSessionResult::Busy;
-        }
-
         return IssueCommentSessionResult::Ready(session);
     }
 
@@ -200,68 +182,13 @@ async fn load_or_create_issue_session(
     }
 }
 
-async fn apply_build_mode_switch_if_requested(
-    build_requested: bool,
-    session_record: &mut Session,
-    payload: &IssueCommentPayload,
-    db: &DbPool,
-    forgejo: &ForgejoClient,
-) -> Result<(), Response> {
-    if build_requested && session_record.mode != SessionMode::Build {
-        if let Err(e) =
-            update_session_mode(db, &session_record.id, SessionMode::Build.as_str()).await
-        {
-            error!(
-                repo = %payload.repository.full_name,
-                issue_id = %payload.issue.number,
-                session_id = %session_record.id,
-                err = %e,
-                "Failed to update session mode"
-            );
-            let err_msg =
-                comment_text_error(&format!("Failed to switch session to build mode: {}", e));
-            post_issue_comment_non_blocking(
-                forgejo,
-                &payload.repository.full_name,
-                payload.issue.number,
-                &err_msg,
-                "session mode update error",
-            )
-            .await;
-            return Err(ok_response("OK - error logged"));
-        }
-        session_record.mode = SessionMode::Build;
-    }
-
-    Ok(())
-}
-
-async fn post_issue_acknowledgement(
-    forgejo: &ForgejoClient,
-    payload: &IssueCommentPayload,
-    action: SessionAction,
-) {
-    let ack_msg = match action {
-        SessionAction::Plan => comment_text_thinking(),
-        SessionAction::Build | SessionAction::Revision => comment_text_working(),
-    };
-
-    post_issue_comment_non_blocking(
-        forgejo,
-        &payload.repository.full_name,
-        payload.issue.number,
-        &ack_msg,
-        "acknowledgement",
-    )
-    .await;
-}
-
 fn spawn_issue_dispatch(
     payload: IssueCommentPayload,
     db: DbPool,
     forgejo: ForgejoClient,
     config: Config,
     action: SessionAction,
+    in_flight_issue_triggers: Arc<Mutex<HashSet<String>>>,
 ) {
     let trigger = SessionTrigger {
         repo_full_name: payload.repository.full_name.clone(),
@@ -277,7 +204,55 @@ fn spawn_issue_dispatch(
                 payload.repository.full_name, payload.issue.number, e
             );
         }
+
+        let lock_key = format!("{}#{}", payload.repository.full_name, payload.issue.number);
+        let mut in_flight = in_flight_issue_triggers.lock().await;
+        in_flight.remove(&lock_key);
     });
+}
+
+async fn mark_issue_comment_event_seen(
+    processed_issue_comment_events: &Arc<Mutex<HashSet<String>>>,
+    payload: &IssueCommentPayload,
+) -> bool {
+    let event_key = format!(
+        "issue_comment:{}:{}:{}",
+        payload.repository.full_name, payload.comment.id, payload.action
+    );
+
+    let mut processed = processed_issue_comment_events.lock().await;
+    if processed.contains(&event_key) {
+        return false;
+    }
+
+    processed.insert(event_key);
+    true
+}
+
+async fn acquire_issue_dispatch_lock(
+    in_flight_issue_triggers: &Arc<Mutex<HashSet<String>>>,
+    repo_full_name: &str,
+    issue_id: u64,
+) -> bool {
+    let lock_key = format!("{}#{}", repo_full_name, issue_id);
+    let mut in_flight = in_flight_issue_triggers.lock().await;
+
+    if in_flight.contains(&lock_key) {
+        return false;
+    }
+
+    in_flight.insert(lock_key);
+    true
+}
+
+async fn release_issue_dispatch_lock(
+    in_flight_issue_triggers: &Arc<Mutex<HashSet<String>>>,
+    repo_full_name: &str,
+    issue_id: u64,
+) {
+    let lock_key = format!("{}#{}", repo_full_name, issue_id);
+    let mut in_flight = in_flight_issue_triggers.lock().await;
+    in_flight.remove(&lock_key);
 }
 
 /// Handle issue_comment webhook events
@@ -286,6 +261,9 @@ pub async fn handle_issue_comment(
     db: &DbPool,
     forgejo: &ForgejoClient,
     config: &Config,
+    forgejo_user_id: u64,
+    in_flight_issue_triggers: &Arc<Mutex<HashSet<String>>>,
+    processed_issue_comment_events: &Arc<Mutex<HashSet<String>>>,
 ) -> Result<Response, axum::response::Response> {
     info!(
         repo = %payload.repository.full_name,
@@ -295,11 +273,13 @@ pub async fn handle_issue_comment(
         "Received issue_comment webhook"
     );
 
-    // 1. Ignore if comment author == config.forgejo.bot_username (loop prevention)
-    if payload.sender.login == config.forgejo.bot_username {
+    // 1. Ignore comments from the authenticated Forgejo account (loop prevention)
+    if payload.sender.id == forgejo_user_id {
         info!(
-            "Ignoring comment from bot user '{}' (loop prevention)",
-            config.forgejo.bot_username
+            sender_id = %payload.sender.id,
+            sender_login = %payload.sender.login,
+            bot_user_id = %forgejo_user_id,
+            "Ignoring comment from authenticated Forgejo account (loop prevention)"
         );
         return Ok(ok_response("OK - ignored bot comment"));
     }
@@ -315,69 +295,77 @@ pub async fn handle_issue_comment(
         return Ok(ok_response("OK - no @forgebot trigger"));
     }
 
-    // 4. Parse trigger flags from comment
-    let build_requested = parse_build_requested_from_comment(&payload.comment.body);
-    info!(build_requested, "Parsed trigger flags from comment");
+    // 4. Ignore duplicate deliveries for the same comment event
+    if !mark_issue_comment_event_seen(processed_issue_comment_events, &payload).await {
+        info!(
+            repo = %payload.repository.full_name,
+            issue_id = %payload.issue.number,
+            comment_id = %payload.comment.id,
+            action = %payload.action,
+            "Ignoring duplicate issue_comment delivery"
+        );
+        return Ok(ok_response("OK - duplicate issue_comment ignored"));
+    }
 
-    // 5. Look up or create session row
-    let mut session_record = match load_or_create_issue_session(&payload, db, forgejo, config).await
+    // 5. Prevent concurrent dispatches for the same issue (fail closed)
+    if !acquire_issue_dispatch_lock(
+        in_flight_issue_triggers,
+        &payload.repository.full_name,
+        payload.issue.number,
+    )
+    .await
     {
+        info!(
+            repo = %payload.repository.full_name,
+            issue_id = %payload.issue.number,
+            "Ignoring trigger while another dispatch is already in-flight"
+        );
+        return Ok(ok_response("OK - dispatch already in-flight"));
+    }
+
+    // 6. Look up or create session row
+    let session_record = match load_or_create_issue_session(&payload, db, forgejo, config).await {
         IssueCommentSessionResult::Ready(session) => session,
-        IssueCommentSessionResult::Busy => return Ok(ok_response("OK - session busy")),
-        IssueCommentSessionResult::ErrorLogged => return Ok(ok_response("OK - error logged")),
+        IssueCommentSessionResult::ErrorLogged => {
+            release_issue_dispatch_lock(
+                in_flight_issue_triggers,
+                &payload.repository.full_name,
+                payload.issue.number,
+            )
+            .await;
+            return Ok(ok_response("OK - error logged"));
+        }
         IssueCommentSessionResult::CreationError => {
+            release_issue_dispatch_lock(
+                in_flight_issue_triggers,
+                &payload.repository.full_name,
+                payload.issue.number,
+            )
+            .await;
             return Ok(ok_response("OK - session creation error"));
         }
     };
 
-    // 7. Persist mode switch to build when requested.
-    if let Err(response) = apply_build_mode_switch_if_requested(
-        build_requested,
-        &mut session_record,
-        &payload,
-        db,
-        forgejo,
-    )
-    .await
-    {
-        return Ok(response);
-    }
+    let action = SessionAction::Plan;
+    info!(
+        mode = %session_record.mode.as_str(),
+        action = %action.as_str(),
+        "Selected issue-comment action"
+    );
 
-    let action = session_record.mode.action();
-    info!(mode = %session_record.mode.as_str(), action = %action.as_str(), "Selected session mode and action");
+    // 7. Create SessionTrigger and dispatch in background task.
+    // Acknowledgement comments are posted from dispatch after admission gate passes.
+    spawn_issue_dispatch(
+        payload,
+        db.clone(),
+        forgejo.clone(),
+        config.clone(),
+        action,
+        Arc::clone(in_flight_issue_triggers),
+    );
 
-    // 8. Post acknowledgement comment
-    post_issue_acknowledgement(forgejo, &payload, action).await;
-
-    // 9. Create SessionTrigger and dispatch in background task
-    spawn_issue_dispatch(payload, db.clone(), forgejo.clone(), config.clone(), action);
-
-    // 10. Return 200 immediately (non-blocking)
+    // 8. Return 200 immediately (non-blocking)
     Ok(ok_response("OK - dispatching session"))
-}
-
-/// Parse build trigger from comment body.
-/// - "--build" anywhere in the comment switches to build mode
-/// - "@forgebot build" is accepted for backwards compatibility
-fn parse_build_requested_from_comment(body: &str) -> bool {
-    let body_lower = body.to_lowercase();
-
-    if body_lower.contains("--build") {
-        return true;
-    }
-
-    // Look for @forgebot followed by action keyword
-    if let Some(idx) = body_lower.find("@forgebot") {
-        let after_trigger = &body_lower[idx..];
-        let words: Vec<&str> = after_trigger.split_whitespace().collect();
-
-        // Check second word (first word is @forgebot)
-        if words.len() > 1 && words[1] == "build" {
-            return true;
-        }
-    }
-
-    false
 }
 
 /// Handle pull_request webhook events (opened, closed, merged)
@@ -553,6 +541,7 @@ pub async fn handle_pull_request_review_comment(
     db: &DbPool,
     forgejo: &ForgejoClient,
     config: &Config,
+    forgejo_user_id: u64,
 ) -> Result<Response, axum::response::Response> {
     info!(
         repo = %payload.repository.full_name,
@@ -562,11 +551,13 @@ pub async fn handle_pull_request_review_comment(
         "Received pull_request_review_comment webhook"
     );
 
-    // 1. Ignore if author == bot username
-    if payload.sender.login == config.forgejo.bot_username {
+    // 1. Ignore if author matches the authenticated Forgejo account
+    if payload.sender.id == forgejo_user_id {
         info!(
-            "Ignoring review comment from bot user '{}' (loop prevention)",
-            config.forgejo.bot_username
+            sender_id = %payload.sender.id,
+            sender_login = %payload.sender.login,
+            bot_user_id = %forgejo_user_id,
+            "Ignoring review comment from authenticated Forgejo account (loop prevention)"
         );
         return Ok(ok_response("OK - ignored bot comment"));
     }
@@ -612,25 +603,7 @@ pub async fn handle_pull_request_review_comment(
         }
     };
 
-    // 4. Check if session is busy
-    if session.state.is_busy() {
-        info!(
-            "Session {} is busy (state: {}), posting busy comment",
-            session.id, session.state
-        );
-        let busy_msg = comment_text_busy();
-        post_pr_comment_non_blocking(
-            forgejo,
-            &payload.repository.full_name,
-            payload.pull_request.number,
-            &busy_msg,
-            "session busy",
-        )
-        .await;
-        return Ok(ok_response("OK - session busy"));
-    }
-
-    // 5. Post acknowledgement comment on PR
+    // 4. Post acknowledgement comment on PR
     let ack_msg = "🤖 forgebot is addressing review comments...".to_string();
     post_pr_comment_non_blocking(
         forgejo,
@@ -641,7 +614,7 @@ pub async fn handle_pull_request_review_comment(
     )
     .await;
 
-    // 6. Create SessionTrigger with action "revision" and dispatch
+    // 5. Create SessionTrigger with action "revision" and dispatch
     let trigger = SessionTrigger {
         repo_full_name: payload.repository.full_name.clone(),
         issue_id: session.issue_id as u64,
@@ -663,7 +636,7 @@ pub async fn handle_pull_request_review_comment(
         }
     });
 
-    // 7. Return 200 immediately
+    // 6. Return 200 immediately
     Ok(ok_response("OK - dispatching revision"))
 }
 
@@ -681,20 +654,6 @@ pub async fn handle_unknown_event(event_type: &str) -> Result<Response, axum::re
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_parse_build_requested_from_comment() {
-        assert!(parse_build_requested_from_comment("@forgebot --build"));
-        assert!(parse_build_requested_from_comment(
-            "Hey @forgebot can you do this --build please"
-        ));
-        assert!(parse_build_requested_from_comment("@forgebot build"));
-        assert!(parse_build_requested_from_comment("@FORGEBOT BUILD"));
-
-        assert!(!parse_build_requested_from_comment("@forgebot"));
-        assert!(!parse_build_requested_from_comment("@forgebot plan"));
-        assert!(!parse_build_requested_from_comment("just a comment"));
-    }
 
     #[test]
     fn test_extract_issue_id_from_branch() {

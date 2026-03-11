@@ -35,23 +35,7 @@ pub struct OpencodeConfig {
     pub git_binary: String,
     pub model: String,
     pub web_host: Option<String>,
-    pub transport: OpencodeTransport,
     pub api: OpencodeApiConfig,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OpencodeTransport {
-    Cli,
-    Api,
-}
-
-impl OpencodeTransport {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Cli => "cli",
-            Self::Api => "api",
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -73,7 +57,7 @@ pub fn webhook_url(config: &Config) -> String {
 impl Config {
     /// Load configuration entirely from environment variables.
     /// Required env vars (must be set or error): FORGEBOT_WEBHOOK_SECRET, FORGEBOT_FORGEJO_URL, FORGEBOT_FORGEJO_TOKEN
-    /// Optional env vars (have defaults): FORGEBOT_SERVER_HOST, FORGEBOT_SERVER_PORT, FORGEBOT_FORGEJO_BOT_USERNAME, FORGEBOT_OPENCODE_BINARY, FORGEBOT_OPENCODE_WORKTREE_BASE, FORGEBOT_OPENCODE_CONFIG_DIR, FORGEBOT_DATABASE_PATH, FORGEBOT_OPENCODE_TRANSPORT, FORGEBOT_OPENCODE_API_BASE_URL, FORGEBOT_OPENCODE_API_TIMEOUT_SECS
+    /// Optional env vars (have defaults): FORGEBOT_SERVER_HOST, FORGEBOT_SERVER_PORT, FORGEBOT_FORGEJO_BOT_USERNAME, FORGEBOT_OPENCODE_BINARY, FORGEBOT_OPENCODE_WORKTREE_BASE, FORGEBOT_OPENCODE_CONFIG_DIR, FORGEBOT_DATABASE_PATH, FORGEBOT_OPENCODE_API_BASE_URL, FORGEBOT_OPENCODE_API_TIMEOUT_SECS
     /// Optional env vars (unset by default): FORGEBOT_OPENCODE_WEB_HOST, FORGEBOT_OPENCODE_API_TOKEN
     pub fn load() -> Result<Self> {
         info!("Loading configuration from environment variables...");
@@ -120,9 +104,7 @@ impl Config {
         let opencode_binary = env_var_with_default("FORGEBOT_OPENCODE_BINARY", "opencode");
         let git_binary = env_var_with_default("FORGEBOT_GIT_BINARY", "git");
         let opencode_model = env_var_with_default("FORGEBOT_OPENCODE_MODEL", "opencode/kimi-k2.5");
-        let opencode_web_host = env_var_optional("FORGEBOT_OPENCODE_WEB_HOST");
-        let opencode_transport =
-            parse_opencode_transport(&env_var_with_default("FORGEBOT_OPENCODE_TRANSPORT", "api"))?;
+        let configured_opencode_web_host = env_var_optional("FORGEBOT_OPENCODE_WEB_HOST");
         let opencode_api_base_url = Some(validate_http_url(
             "FORGEBOT_OPENCODE_API_BASE_URL",
             &env_var_with_default("FORGEBOT_OPENCODE_API_BASE_URL", "http://127.0.0.1:4096"),
@@ -130,6 +112,21 @@ impl Config {
         let opencode_api_token = env_var_optional("FORGEBOT_OPENCODE_API_TOKEN");
         let opencode_api_timeout_secs =
             env_var_parse_u64_with_default("FORGEBOT_OPENCODE_API_TIMEOUT_SECS", 30)?;
+        let opencode_web_host = match configured_opencode_web_host {
+            Some(host) => Some(host),
+            None => {
+                if let Some(api_base_url) = &opencode_api_base_url {
+                    warn!(
+                        "FORGEBOT_OPENCODE_WEB_HOST not set. Defaulting to FORGEBOT_OPENCODE_API_BASE_URL for session Web UI links: {}",
+                        api_base_url
+                    );
+                    Some(api_base_url.clone())
+                } else {
+                    None
+                }
+            }
+        };
+
         let worktree_base = env_var_path_with_default(
             "FORGEBOT_OPENCODE_WORKTREE_BASE",
             "/var/lib/forgebot/worktrees",
@@ -140,12 +137,6 @@ impl Config {
         );
         let database_path =
             env_var_path_with_default("FORGEBOT_DATABASE_PATH", "/var/lib/forgebot/forgebot.db");
-
-        if opencode_transport == OpencodeTransport::Cli {
-            warn!(
-                "FORGEBOT_OPENCODE_TRANSPORT=cli is enabled. This is rollback compatibility mode; api transport is the default path."
-            );
-        }
 
         info!("Configuration loaded successfully");
         info!("  FORGEBOT_SERVER_HOST: {}", server_host);
@@ -158,10 +149,7 @@ impl Config {
         info!("  FORGEBOT_OPENCODE_BINARY: {}", opencode_binary);
         info!("  FORGEBOT_GIT_BINARY: {}", git_binary);
         info!("  FORGEBOT_OPENCODE_MODEL: {}", opencode_model);
-        info!(
-            "  FORGEBOT_OPENCODE_TRANSPORT: {}",
-            opencode_transport.as_str()
-        );
+        info!("  FORGEBOT_OPENCODE_TRANSPORT: api (fixed)");
         match &opencode_api_base_url {
             Some(url) => info!("  FORGEBOT_OPENCODE_API_BASE_URL: {}", url),
             None => info!("  FORGEBOT_OPENCODE_API_BASE_URL: [not set]"),
@@ -210,7 +198,6 @@ impl Config {
                 git_binary,
                 model: opencode_model,
                 web_host: opencode_web_host,
-                transport: opencode_transport,
                 api: OpencodeApiConfig {
                     base_url: opencode_api_base_url,
                     token: opencode_api_token,
@@ -330,17 +317,6 @@ fn env_var_optional(name: &str) -> Option<String> {
     }
 }
 
-fn parse_opencode_transport(value: &str) -> Result<OpencodeTransport> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "cli" => Ok(OpencodeTransport::Cli),
-        "api" => Ok(OpencodeTransport::Api),
-        other => anyhow::bail!(
-            "ERROR: FORGEBOT_OPENCODE_TRANSPORT must be one of: cli, api (got '{}')",
-            other
-        ),
-    }
-}
-
 fn validate_http_url(var_name: &str, value: &str) -> Result<String> {
     let trimmed = value.trim();
     let parsed = Url::parse(trimmed)
@@ -387,19 +363,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_opencode_transport() {
-        assert_eq!(
-            parse_opencode_transport("cli").expect("cli should parse"),
-            OpencodeTransport::Cli
-        );
-        assert_eq!(
-            parse_opencode_transport("API").expect("api should parse"),
-            OpencodeTransport::Api
-        );
-        assert!(parse_opencode_transport("invalid").is_err());
-    }
-
-    #[test]
     fn test_validate_http_url() {
         let normalized = validate_http_url("FORGEBOT_TEST_URL", "https://example.com/")
             .expect("https url should parse");
@@ -428,7 +391,6 @@ mod tests {
                 git_binary: "git".to_string(),
                 model: "opencode/kimi-k2.5".to_string(),
                 web_host: None,
-                transport: OpencodeTransport::Cli,
                 api: OpencodeApiConfig {
                     base_url: None,
                     token: None,

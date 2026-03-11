@@ -173,13 +173,10 @@ All other configuration values use sensible defaults:
 - `FORGEBOT_OPENCODE_WORKTREE_BASE`: `/var/lib/forgebot/worktrees`
 - `FORGEBOT_OPENCODE_CONFIG_DIR`: `/var/lib/forgebot/opencode-config`
 - `FORGEBOT_OPENCODE_MODEL`: `opencode/kimi-k2.5`
-- `FORGEBOT_OPENCODE_TRANSPORT`: `api`
 - `FORGEBOT_OPENCODE_API_BASE_URL`: `http://127.0.0.1:4096`
 - `FORGEBOT_OPENCODE_API_TIMEOUT_SECS`: `30`
 - `FORGEBOT_OPENCODE_WEB_HOST`: *(unset)* (when set, forgebot posts session Web UI links)
 - `FORGEBOT_DATABASE_PATH`: `/var/lib/forgebot/forgebot.db`
-
-Set `FORGEBOT_OPENCODE_TRANSPORT=cli` to use rollback compatibility mode.
 
 **Important**: `FORGEBOT_FORGEBOT_HOST` should be set to your public-facing URL for production deployments (e.g., `https://forgebot.example.com`). If not set, it defaults to `http://<server_host>:<server_port>`, which may not be accessible from the internet if the server is bound to localhost.
 
@@ -364,7 +361,6 @@ These have sensible defaults if not set:
 | `FORGEBOT_OPENCODE_BINARY` | `opencode` | Path to opencode binary |
 | `FORGEBOT_OPENCODE_WORKTREE_BASE` | `/var/lib/forgebot/worktrees` | Base directory for git worktrees |
 | `FORGEBOT_OPENCODE_CONFIG_DIR` | `/var/lib/forgebot/opencode-config` | Directory for opencode config files |
-| `FORGEBOT_OPENCODE_TRANSPORT` | `api` | OpenCode transport mode (`api` default, `cli` rollback compatibility mode) |
 | `FORGEBOT_OPENCODE_API_BASE_URL` | `http://127.0.0.1:4096` | Base URL for the OpenCode API server |
 | `FORGEBOT_OPENCODE_API_TOKEN` | *(unset)* | Optional bearer token for OpenCode API authentication |
 | `FORGEBOT_OPENCODE_API_TIMEOUT_SECS` | `30` | HTTP timeout for OpenCode API requests |
@@ -385,33 +381,21 @@ These have sensible defaults if not set:
 
 All interactions use `@forgebot` mentions in Forgejo comments.
 
-#### Plan Phase — Analyze and Produce a Plan
+#### Issue Flow — Plan Then Implement
 
 In an issue comment, write:
 
 ```
-@forgebot plan
+@forgebot
 ```
 
 forgebot will:
 1. Create a worktree for the issue
-2. Invoke opencode in **plan mode**
-3. The agent analyzes the codebase and issue description
-4. Post a detailed implementation plan as a Forgejo comment
+2. Invoke opencode using the `forgebot` agent
+3. The agent posts at least one planning comment on the issue
+4. Based on issue context and follow-up comments, the agent proceeds to implementation and opens a PR
 
-#### Build Phase — Implement the Work
-
-In the same issue (after planning), write:
-
-```
-@forgebot build
-```
-
-forgebot will:
-1. Resume the existing session
-2. Invoke opencode in **build mode**
-3. The agent implements the previously created plan
-4. Open a pull request when complete
+If you want to push the workflow forward, leave another `@forgebot` comment (for example: "@forgebot proceed with implementation").
 
 #### PR Review Revision — Address Review Comments
 
@@ -423,7 +407,7 @@ Fix the linting errors and add more test coverage.
 ```
 
 forgebot will:
-1. Resume the session in build mode
+1. Resume the same issue session
 2. Use your review comment as the prompt
 3. Make the requested changes
 4. Force-push to the existing PR branch
@@ -581,8 +565,8 @@ ses_{issue_id}_{owner}_{repo}
 
 Example: `ses_42_alice_myrepo`
 
-opencode creates and resumes sessions using these IDs, maintaining full context across plan, build, and revision phases. This means:
-- You can `@forgebot plan` today and `@forgebot build` tomorrow
+opencode creates and resumes sessions using these IDs, maintaining full context across issue and PR interactions. This means:
+- You can `@forgebot` multiple times on the same issue and keep context
 - PR review comments resume the same session
 - Session state persists across forgebot restarts
 

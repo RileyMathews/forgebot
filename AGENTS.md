@@ -97,13 +97,21 @@ curl -si -X POST http://127.0.0.1:8765/ui/repo/riley/terminal-config/webhook
 
 4. Create an issue in Forgejo and trigger a collaborative session with an issue comment. Use the forgejo MCP to create the issue and comment. The comment must contain `@forgebot`.
 
-5. Verify the session reaches idle and the bot responds with a plan on the issue. Again use the MCP for this.
+5. Verify the bot posts an actual plan comment on the issue (not just acknowledgement/dispatch comments). In API mode, a session may return to `idle` before the asynchronous OpenCode run posts the plan, so poll issue comments until the plan appears.
 
-6. Tell the bot to switch to PR/build mode with another comment containing `@forgebot --build`.
+6. If the plan asks follow-up questions, answer them on the issue and trigger another run with a new `@forgebot` comment. If the plan is sufficient, trigger another `@forgebot` comment asking it to proceed.
 
-7. Verify the session reaches `idle` and a PR is created. Use the MCP to fetch PRs and confirm via the body that its linked in some way to the issue created.
+7. Verify a PR is created and linked back to the issue (for example, via `Closes #<issue>` or equivalent in the PR body/comment trail). Session state alone is insufficient in API mode; use MCP to confirm issue + PR side effects.
 
 8. Always run the post-test cleanup steps from the hygiene section.
+
+### When Unexpected Failures Happen During E2E
+
+If the smoke test hits an unexpected failure (for example, missing plan comment, missing PR side effects, or any unclear asynchronous behavior), do **not** immediately run teardown/cleanup.
+
+1. Leave `process-compose` services running so the operator can inspect live OpenCode/Forgebot session state.
+2. Capture and report the issue/PR links, session IDs, and relevant log lines.
+3. Wait for operator confirmation before running cleanup (`process-compose down`, DB removal, webhook cleanup).
 
 ## Development Shell
 

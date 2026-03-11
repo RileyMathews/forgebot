@@ -243,8 +243,6 @@ in
     opencodeWebServer = lib.mkOption {
       type = lib.types.submodule {
         options = {
-          enabled = lib.mkEnableOption "opencode web server service";
-
           port = lib.mkOption {
             type = lib.types.port;
             default = 4096;
@@ -268,7 +266,7 @@ in
         };
       };
       default = { };
-      description = "Optional opencode web server configuration.";
+      description = "Opencode web server configuration (always enabled).";
     };
 
     # =============================================================================
@@ -338,8 +336,9 @@ in
       systemd.services.forgebot = {
         description = "Forgebot — Forgejo webhook bridge to opencode";
         wantedBy = [ "multi-user.target" ];
-        after = [ "network-online.target" ];
-        wants = [ "network-online.target" ];
+        after = [ "network-online.target" "forgebot-opencode-web.service" ];
+        wants = [ "network-online.target" "forgebot-opencode-web.service" ];
+        requires = [ "forgebot-opencode-web.service" ];
 
         preStart = ''
           # Validate credentials file exists
@@ -446,6 +445,7 @@ in
             "FORGEBOT_OPENCODE_WORKTREE_BASE=${cfg.opencode.worktreeBase}"
             "FORGEBOT_OPENCODE_CONFIG_DIR=${cfg.dataDir}/config/opencode/.opencode"
             "FORGEBOT_OPENCODE_MODEL=${cfg.opencode.model}"
+            "FORGEBOT_OPENCODE_API_BASE_URL=http://127.0.0.1:${toString cfg.opencodeWebServer.port}"
             "FORGEBOT_DATABASE_PATH=${cfg.database.path}"
             "GIT_AUTHOR_NAME=forgebot"
             "GIT_AUTHOR_EMAIL=forgebot@localhost"
@@ -472,12 +472,11 @@ in
         };
       };
 
-      systemd.services.forgebot-opencode-web = lib.mkIf cfg.opencodeWebServer.enabled {
+      systemd.services.forgebot-opencode-web = {
         description = "Opencode web server for forgebot";
         wantedBy = [ "multi-user.target" ];
-        after = [ "network-online.target" "forgebot.service" ];
+        after = [ "network-online.target" ];
         wants = [ "network-online.target" ];
-        requires = [ "forgebot.service" ];
 
         serviceConfig = {
           Type = "simple";

@@ -13,7 +13,9 @@ use bytes::Bytes;
 use hmac::{Hmac, Mac};
 use serde::de::DeserializeOwned;
 use sha2::Sha256;
+use std::collections::HashSet;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
 use crate::config::Config;
@@ -27,14 +29,28 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub db: DbPool,
     pub forgejo: ForgejoClient,
+    pub forgejo_user_id: u64,
+    pub forgejo_user_login: String,
+    pub in_flight_issue_triggers: Arc<Mutex<HashSet<String>>>,
+    pub processed_issue_comment_events: Arc<Mutex<HashSet<String>>>,
 }
 
 impl AppState {
-    pub fn new(config: Arc<Config>, db: DbPool, forgejo: ForgejoClient) -> Self {
+    pub fn new(
+        config: Arc<Config>,
+        db: DbPool,
+        forgejo: ForgejoClient,
+        forgejo_user_id: u64,
+        forgejo_user_login: String,
+    ) -> Self {
         Self {
             config,
             db,
             forgejo,
+            forgejo_user_id,
+            forgejo_user_login,
+            in_flight_issue_triggers: Arc::new(Mutex::new(HashSet::new())),
+            processed_issue_comment_events: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 }
@@ -189,8 +205,16 @@ async fn webhook_handler(State(state): State<AppState>, request: Request) -> Res
                 Ok(payload) => payload,
                 Err(error) => return invalid_json_response(event_type.as_str(), &error),
             };
-            match handlers::handle_issue_comment(payload, &state.db, &state.forgejo, &state.config)
-                .await
+            match handlers::handle_issue_comment(
+                payload,
+                &state.db,
+                &state.forgejo,
+                &state.config,
+                state.forgejo_user_id,
+                &state.in_flight_issue_triggers,
+                &state.processed_issue_comment_events,
+            )
+            .await
             {
                 Ok(response) => response,
                 Err(response) => response,
@@ -218,6 +242,7 @@ async fn webhook_handler(State(state): State<AppState>, request: Request) -> Res
                 &state.db,
                 &state.forgejo,
                 &state.config,
+                state.forgejo_user_id,
             )
             .await
             {

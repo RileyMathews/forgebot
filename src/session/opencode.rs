@@ -1,15 +1,15 @@
-//! opencode configuration directory setup and subprocess invocation
+//! opencode configuration directory setup and API session orchestration
 //!
 //! This module handles:
 //! 1. Writing the global opencode config directory on startup
-//! 2. Spawning opencode subprocesses with proper environment
+//! 2. Dispatching OpenCode API prompts with proper session continuity
 //! 3. Session orchestration and lifecycle management
 //! 4. Crash recovery on startup
 
-use crate::config::{Config, OpencodeConfig, OpencodeTransport};
+use crate::config::{Config, OpencodeConfig};
 use crate::db::{
-    DbPool, NewSession, Session, get_issue_external_opencode_session_id, get_sessions_in_state,
-    insert_session, update_issue_external_opencode_session_id, update_session_state,
+    DbPool, NewSession, Session, get_issue_external_opencode_session_id, insert_session,
+    update_issue_external_opencode_session_id, update_session_state,
 };
 use crate::forgejo::ForgejoClient;
 use crate::forgejo::models::{Issue, IssueComment, PullRequestReviewComment};
@@ -20,23 +20,18 @@ use crate::session::opencode_api::{
 };
 use crate::session::worktree;
 use crate::session::{
-    PromptContext, SESSION_BUSY_STATES, SessionAction, SessionState, SessionTrigger, build_prompt,
-    derive_session_id, opencode_session_web_url,
+    PromptContext, SessionAction, SessionState, SessionTrigger, build_prompt, derive_session_id,
+    opencode_session_web_url,
 };
 use anyhow::{Context, Result, anyhow, bail};
 use std::collections::HashMap;
-use std::collections::HashSet;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Stdio;
-use std::time::Duration;
-use tokio::process::Command;
-use tokio::time::sleep;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 // Template files embedded at compile time
 const PACKAGE_JSON: &str = include_str!("../../opencode-config/package.json");
+const OPENCODE_JSON: &str = include_str!("../../opencode-config/opencode.json");
 const AGENT_DEF: &str = include_str!("../../opencode-config/agents/forgebot.md");
 const TOOL_COMMENT_ISSUE: &str = include_str!("../../opencode-config/tools/comment-issue.ts");
 const TOOL_COMMENT_PR: &str = include_str!("../../opencode-config/tools/comment-pr.ts");
@@ -91,6 +86,11 @@ pub fn setup_opencode_config_dir(config: &OpencodeConfig) -> Result<()> {
             "package.json",
         ),
         (
+            config_dir.join("opencode.json"),
+            OPENCODE_JSON,
+            "opencode.json",
+        ),
+        (
             agents_dir.join("forgebot.md"),
             AGENT_DEF,
             "agents/forgebot.md",
@@ -126,450 +126,6 @@ pub fn setup_opencode_config_dir(config: &OpencodeConfig) -> Result<()> {
 
     info!("opencode config directory setup complete");
     Ok(())
-}
-
-/// Parameters for running opencode
-pub struct RunOpencodeParams<'a> {
-    pub config: &'a Config,
-    pub repo_full_name: &'a str,
-    pub derived_session_id: &'a str,
-    pub external_opencode_session_id: Option<&'a str>,
-    pub agent_mode: &'a str,
-    pub model: &'a str,
-    pub worktree_path: &'a Path,
-    pub prompt: &'a str,
-    pub env_extras: HashMap<String, String>,
-}
-
-/// Run opencode subprocess with the given parameters.
-///
-/// If external_opencode_session_id is provided, continues that session.
-/// Otherwise, creates a new session with the derived_session_id as title.
-///
-/// # Returns
-/// * `Ok(Some(session_id))` - the opencode session ID (captured or provided)
-/// * `Ok(None)` - if we couldn't capture the session ID
-/// * `Err` - if opencode fails
-pub async fn run_opencode(params: RunOpencodeParams<'_>) -> Result<Option<String>> {
-    let binary = &params.config.opencode.binary;
-    let opencode_config_home = params.config.opencode.config_dir.clone();
-    let derived_session_id = params.derived_session_id;
-    let agent_mode = params.agent_mode;
-    let model = params.model;
-    let worktree_path = params.worktree_path;
-    let prompt = params.prompt;
-    let env_extras = params.env_extras;
-
-    debug!(
-        "Spawning opencode: binary={}, derived_session_id={}, agent_mode={}, model={}",
-        binary, derived_session_id, agent_mode, model
-    );
-
-    // Build environment
-    let mut env_vars: HashMap<String, String> = HashMap::new();
-
-    // 1. Start with process environment
-    for (key, value) in std::env::vars() {
-        env_vars.insert(key, value);
-    }
-
-    let base_path = env_vars
-        .get("PATH")
-        .cloned()
-        .unwrap_or_else(|| "".to_string());
-
-    // 2. Add env loader output (direnv/nix results), but keep runtime-critical
-    // paths from the service environment. Nix dev shells often set HOME to
-    // /homeless-shelter, which breaks Bun/opencode under hardened systemd.
-    let mut blocked_runtime_overrides = Vec::new();
-    for (key, value) in env_extras {
-        if matches!(
-            key.as_str(),
-            "HOME"
-                | "XDG_DATA_HOME"
-                | "XDG_CONFIG_HOME"
-                | "XDG_CACHE_HOME"
-                | "BUN_INSTALL_CACHE_DIR"
-                | "TMPDIR"
-                | "TMP"
-                | "TEMP"
-                | "NIX_ENFORCE_PURITY"
-                | "OPENCODE_CONFIG_DIR"
-        ) {
-            blocked_runtime_overrides.push(format!("{}={}", key, value));
-            continue;
-        }
-        env_vars.insert(key, value);
-    }
-
-    // Keep service PATH entries available (git/opencode), even if env loader
-    // provides a replacement PATH.
-    let mut merged_path_entries: Vec<String> = Vec::new();
-    let mut seen = HashSet::new();
-    let current_path = env_vars
-        .get("PATH")
-        .cloned()
-        .unwrap_or_else(|| "".to_string());
-    for entry in current_path.split(':').chain(base_path.split(':')) {
-        if entry.is_empty() {
-            continue;
-        }
-        let entry_str = entry.to_string();
-        if seen.insert(entry_str.clone()) {
-            merged_path_entries.push(entry_str);
-        }
-    }
-    if !merged_path_entries.is_empty() {
-        env_vars.insert("PATH".to_string(), merged_path_entries.join(":"));
-    }
-    if !blocked_runtime_overrides.is_empty() {
-        warn!(
-            overrides = %blocked_runtime_overrides.join(", "),
-            "Ignored env loader overrides for protected runtime variables"
-        );
-    }
-
-    // 3. Set FORGEBOT_* vars (always win)
-    env_vars.insert(
-        "FORGEBOT_FORGEJO_URL".to_string(),
-        params.config.forgejo.url.clone(),
-    );
-    env_vars.insert(
-        "FORGEBOT_FORGEJO_TOKEN".to_string(),
-        params.config.forgejo.token.clone(),
-    );
-    // Note: XDG_DATA_HOME and XDG_CONFIG_HOME are set by the systemd service
-    // and inherited from the process environment. These control where opencode
-    // looks for auth.json ($XDG_DATA_HOME/opencode/auth.json) and global config.
-    // OPENCODE_CONFIG_DIR is the real variable for custom config directory.
-    env_vars.insert(
-        "OPENCODE_CONFIG_DIR".to_string(),
-        opencode_config_home.display().to_string(),
-    );
-
-    // Configure non-interactive git HTTPS auth using the Forgejo token.
-    // The token is already present in FORGEBOT_FORGEJO_TOKEN. This askpass script
-    // returns bot username for username prompts and token for password prompts.
-    let askpass_path = std::env::temp_dir().join("forgebot-git-askpass.sh");
-    if let Some(parent) = askpass_path.parent() {
-        std::fs::create_dir_all(parent).with_context(|| {
-            format!(
-                "failed to create directory for git askpass script at {}",
-                parent.display()
-            )
-        })?;
-    }
-    std::fs::write(
-        &askpass_path,
-        r#"#!/bin/sh
-prompt="$1"
-case "$prompt" in
-  *Username*|*username*)
-    printf '%s\n' "${FORGEBOT_FORGEJO_BOT_USERNAME:-forgebot}"
-    ;;
-  *)
-    printf '%s\n' "${FORGEBOT_FORGEJO_TOKEN:-}"
-    ;;
-esac
-"#,
-    )
-    .with_context(|| {
-        format!(
-            "failed to write git askpass script at {}",
-            askpass_path.display()
-        )
-    })?;
-    std::fs::set_permissions(&askpass_path, std::fs::Permissions::from_mode(0o700)).with_context(
-        || {
-            format!(
-                "failed to set executable permissions on {}",
-                askpass_path.display()
-            )
-        },
-    )?;
-
-    env_vars.insert("GIT_TERMINAL_PROMPT".to_string(), "0".to_string());
-    env_vars.insert(
-        "GIT_ASKPASS".to_string(),
-        askpass_path.display().to_string(),
-    );
-    env_vars.insert(
-        "SSH_ASKPASS".to_string(),
-        askpass_path.display().to_string(),
-    );
-
-    if let Ok(home) = std::env::var("HOME") {
-        env_vars.insert("HOME".to_string(), home);
-    }
-    if let Ok(xdg_data_home) = std::env::var("XDG_DATA_HOME") {
-        env_vars.insert("XDG_DATA_HOME".to_string(), xdg_data_home);
-    }
-    if let Ok(xdg_config_home) = std::env::var("XDG_CONFIG_HOME") {
-        env_vars.insert("XDG_CONFIG_HOME".to_string(), xdg_config_home);
-    }
-    if let Ok(xdg_cache_home) = std::env::var("XDG_CACHE_HOME") {
-        env_vars.insert("XDG_CACHE_HOME".to_string(), xdg_cache_home);
-    }
-    if let Ok(bun_cache_dir) = std::env::var("BUN_INSTALL_CACHE_DIR") {
-        env_vars.insert("BUN_INSTALL_CACHE_DIR".to_string(), bun_cache_dir);
-    }
-    env_vars.insert(
-        "TMPDIR".to_string(),
-        std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string()),
-    );
-    env_vars.insert(
-        "TMP".to_string(),
-        std::env::var("TMP").unwrap_or_else(|_| "/tmp".to_string()),
-    );
-    env_vars.insert(
-        "TEMP".to_string(),
-        std::env::var("TEMP").unwrap_or_else(|_| "/tmp".to_string()),
-    );
-
-    // Resolve binary path from PATH if not an absolute path
-    let binary_path = if binary.contains('/') {
-        binary.to_string()
-    } else {
-        let path_var = env_vars.get("PATH").cloned().unwrap_or_default();
-        let mut found = None;
-        for dir in path_var.split(':') {
-            let candidate = std::path::Path::new(dir).join(binary);
-            if candidate.exists() {
-                found = Some(candidate.to_string_lossy().to_string());
-                break;
-            }
-        }
-        found.unwrap_or_else(|| binary.to_string())
-    };
-
-    // Ensure worktree directory exists
-    if !worktree_path.exists() {
-        info!("Creating worktree directory: {}", worktree_path.display());
-        std::fs::create_dir_all(worktree_path).with_context(|| {
-            format!(
-                "Failed to create worktree directory: {}",
-                worktree_path.display()
-            )
-        })?;
-    }
-
-    // Build the command
-    let mut cmd = Command::new(&binary_path);
-    cmd.arg("run")
-        .arg("--agent")
-        .arg(agent_mode)
-        .arg("--model")
-        .arg(model)
-        .arg("--title")
-        .arg(derived_session_id);
-
-    // If we have an external session ID, continue that session
-    // Otherwise, opencode will create a new one
-    if let Some(external_id) = params.external_opencode_session_id {
-        cmd.arg("--session").arg(external_id);
-        info!("Continuing opencode session: {}", external_id);
-    } else {
-        info!(
-            "Creating new opencode session with title: {}",
-            derived_session_id
-        );
-    }
-
-    cmd.arg("--dir")
-        .arg(worktree_path)
-        .arg(prompt)
-        .current_dir(worktree_path)
-        .envs(&env_vars)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .stdin(Stdio::null()); // Ensure we don't block waiting for input
-
-    info!(
-        "Running opencode command: binary={}, resolved_path={}, worktree={}",
-        binary,
-        binary_path,
-        worktree_path.display()
-    );
-
-    let output = cmd.output().await.with_context(|| {
-        format!(
-            "Failed to spawn opencode process: {} (resolved to {})",
-            binary, binary_path
-        )
-    })?;
-
-    let status = output.status;
-    let exit_code = status.code().unwrap_or(-1);
-    let stderr_collected = String::from_utf8_lossy(&output.stderr).to_string();
-
-    // Try to capture the opencode session ID
-    let captured_session_id = if status.success() {
-        match capture_opencode_session_id(
-            &binary_path,
-            derived_session_id,
-            &env_vars,
-            worktree_path,
-        )
-        .await
-        {
-            Ok(Some(id)) => {
-                info!("Captured opencode session ID: {}", id);
-                Some(id)
-            }
-            Ok(None) => {
-                warn!("Could not capture opencode session ID");
-                None
-            }
-            Err(e) => {
-                error!("Failed to capture opencode session ID: {}", e);
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    if status.success() {
-        debug!("opencode exited successfully with code 0");
-        Ok(captured_session_id)
-    } else {
-        error!(
-            "opencode failed with exit code {}: stdout={}, stderr={}",
-            exit_code,
-            String::from_utf8_lossy(&output.stdout),
-            stderr_collected
-        );
-        Err(anyhow!(
-            "opencode process failed with exit code {}: stdout={}, stderr={}",
-            exit_code,
-            String::from_utf8_lossy(&output.stdout),
-            stderr_collected
-        ))
-    }
-}
-
-/// Capture the opencode session ID by querying the session list.
-/// Looks for a session with the given title (which we set to our derived_session_id).
-async fn capture_opencode_session_id(
-    binary_path: &str,
-    title: &str,
-    env_vars: &HashMap<String, String>,
-    worktree_path: &Path,
-) -> Result<Option<String>> {
-    const ATTEMPTS: usize = 5;
-
-    for attempt in 1..=ATTEMPTS {
-        let output = Command::new(binary_path)
-            .arg("session")
-            .arg("list")
-            .arg("--format")
-            .arg("json")
-            .arg("-n")
-            .arg("50")
-            .envs(env_vars)
-            .current_dir(worktree_path)
-            .output()
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to run opencode session list (attempt {}/{})",
-                    attempt, ATTEMPTS
-                )
-            })?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        debug!(
-            attempt,
-            total_attempts = ATTEMPTS,
-            exit_code = ?output.status.code(),
-            stdout_len = stdout.len(),
-            stderr_len = stderr.len(),
-            "opencode session list command completed"
-        );
-
-        if !output.status.success() {
-            warn!(
-                attempt,
-                total_attempts = ATTEMPTS,
-                exit_code = ?output.status.code(),
-                stderr = %truncate_for_log(&stderr, 1500),
-                stdout = %truncate_for_log(&stdout, 1500),
-                "opencode session list returned non-zero exit code"
-            );
-            anyhow::bail!(
-                "opencode session list failed on attempt {}/{}: {}",
-                attempt,
-                ATTEMPTS,
-                stderr
-            );
-        }
-
-        match serde_json::from_str::<serde_json::Value>(&stdout) {
-            Ok(sessions) => {
-                if let Some(sessions_array) = sessions.as_array() {
-                    debug!(
-                        attempt,
-                        total_attempts = ATTEMPTS,
-                        session_count = sessions_array.len(),
-                        "parsed opencode session list JSON"
-                    );
-                    for session in sessions_array {
-                        if let Some(session_title) = session.get("title").and_then(|t| t.as_str())
-                            && session_title == title
-                            && let Some(session_id) = session.get("id").and_then(|id| id.as_str())
-                        {
-                            return Ok(Some(session_id.to_string()));
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                warn!(
-                    attempt,
-                    total_attempts = ATTEMPTS,
-                    exit_code = ?output.status.code(),
-                    parse_error = %e,
-                    stderr = %truncate_for_log(&stderr, 1500),
-                    stdout = %truncate_for_log(&stdout, 1500),
-                    "failed to parse opencode session list JSON"
-                );
-                anyhow::bail!(
-                    "Failed to parse opencode session list JSON on attempt {}/{}: {}",
-                    attempt,
-                    ATTEMPTS,
-                    e
-                );
-            }
-        }
-
-        debug!(
-            attempt,
-            total_attempts = ATTEMPTS,
-            target_title = %title,
-            "target session title not found in opencode session list"
-        );
-
-        if attempt < ATTEMPTS {
-            sleep(Duration::from_millis((attempt as u64) * 200)).await;
-        }
-    }
-
-    Ok(None)
-}
-
-fn truncate_for_log(value: &str, max_chars: usize) -> String {
-    let char_count = value.chars().count();
-    if char_count <= max_chars {
-        return value.to_string();
-    }
-
-    let truncated: String = value.chars().take(max_chars).collect();
-    format!(
-        "{}... [truncated {} chars]",
-        truncated,
-        char_count - max_chars
-    )
 }
 
 struct IssueContext {
@@ -704,44 +260,6 @@ fn build_acknowledgement_message(
 
 async fn load_existing_session(db: &DbPool, trigger: &SessionTrigger) -> Result<Option<Session>> {
     crate::db::get_session_by_issue(db, &trigger.repo_full_name, trigger.issue_id as i64).await
-}
-
-async fn reject_if_session_busy(
-    forgejo: &ForgejoClient,
-    trigger: &SessionTrigger,
-    session_id: &str,
-    existing_session: &Option<Session>,
-) -> Result<()> {
-    if let Some(session) = existing_session
-        && session.state.is_busy()
-    {
-        info!(
-            "Session {} is busy (state: {}), posting rejection comment",
-            session_id, session.state
-        );
-        if let Err(e) = forgejo
-            .post_issue_comment(
-                &trigger.repo_full_name,
-                trigger.issue_id,
-                &format!(
-                    "⚠️ forgebot is currently busy (state: {}). Please wait for the current operation to complete before triggering a new one.",
-                    session.state
-                ),
-            )
-            .await
-        {
-            warn!(
-                repo = %trigger.repo_full_name,
-                issue_id = %trigger.issue_id,
-                session_id = %session.id,
-                err = %e,
-                "Failed to post busy-state rejection comment"
-            );
-        }
-        bail!("session {} is busy in state {}", session.id, session.state);
-    }
-
-    Ok(())
 }
 
 fn describe_session_status(status: &SessionStatus) -> String {
@@ -959,7 +477,9 @@ Error output: {}",
 
 fn external_session_id(session: &Session) -> Option<&str> {
     let opencode_session_id = session.opencode_session_id.trim();
-    if opencode_session_id.is_empty() || opencode_session_id.starts_with("ses_") {
+    let derived_placeholder = derive_session_id(&session.repo_full_name, session.issue_id as u64);
+
+    if opencode_session_id.is_empty() || opencode_session_id == derived_placeholder {
         None
     } else {
         Some(opencode_session_id)
@@ -976,12 +496,20 @@ async fn handle_dispatch_success(
     completion_confirmed: bool,
 ) -> Result<()> {
     let session_id = derive_session_id(&trigger.repo_full_name, trigger.issue_id);
-    info!(
-        session_id = %session_id,
-        exit_code = 0,
-        captured_session_id = ?captured_session_id,
-        "Session completed successfully"
-    );
+    if completion_confirmed {
+        info!(
+            session_id = %session_id,
+            exit_code = 0,
+            captured_session_id = ?captured_session_id,
+            "Session completed successfully"
+        );
+    } else {
+        info!(
+            session_id = %session_id,
+            captured_session_id = ?captured_session_id,
+            "OpenCode API request accepted; work continues asynchronously"
+        );
+    }
 
     let mut effective_session_id = get_issue_external_opencode_session_id(
         db,
@@ -1085,7 +613,7 @@ async fn handle_dispatch_success(
     let success_msg = if completion_confirmed {
         match trigger.action {
             SessionAction::Plan => {
-                "✅ Collaboration update posted. Add the build flag in a comment when you're ready for implementation and PR creation."
+                "✅ Collaboration update posted. Add another @forgebot comment when you want the agent to continue."
             }
             SessionAction::Build => "✅ Implementation complete! A pull request has been created.",
             SessionAction::Revision => "✅ Review comments addressed and changes pushed.",
@@ -1298,11 +826,8 @@ pub async fn dispatch_session(
     // 1. Fetch issue context from Forgejo
     let issue_context = fetch_issue_context(forgejo, &trigger).await?;
 
-    // 2. Check if session already exists and reject if busy for CLI mode
+    // 2. Check if session already exists
     let existing_session = load_existing_session(db, &trigger).await?;
-    if config.opencode.transport == OpencodeTransport::Cli {
-        reject_if_session_busy(forgejo, &trigger, &session_id, &existing_session).await?;
-    }
 
     // 3. Look up repository metadata and ensure worktree exists
     let repo_record = lookup_repo_record(db, &trigger).await?;
@@ -1326,32 +851,31 @@ pub async fn dispatch_session(
         &issue_context.pr_review_comments,
     );
 
-    // 5. In API mode, reject triggers while OpenCode reports busy/retry.
-    if config.opencode.transport == OpencodeTransport::Api {
-        let preferred_session_id = get_issue_external_opencode_session_id(
-            db,
-            &trigger.repo_full_name,
-            trigger.issue_id as i64,
-        )
-        .await?
-        .or_else(|| {
-            existing_session
-                .as_ref()
-                .and_then(external_session_id)
-                .map(str::to_string)
-        });
-        reject_if_api_admission_blocked(
-            forgejo,
-            config,
-            &trigger,
-            &worktree_path,
-            preferred_session_id.as_deref(),
-        )
-        .await?;
-    }
+    // 5. Reject triggers while OpenCode reports busy/retry.
+    let preferred_session_id = get_issue_external_opencode_session_id(
+        db,
+        &trigger.repo_full_name,
+        trigger.issue_id as i64,
+    )
+    .await?
+    .or_else(|| {
+        existing_session
+            .as_ref()
+            .and_then(external_session_id)
+            .map(str::to_string)
+    });
+    reject_if_api_admission_blocked(
+        forgejo,
+        config,
+        &trigger,
+        &worktree_path,
+        preferred_session_id.as_deref(),
+    )
+    .await?;
 
     // 6. Load environment in the worktree using the repository's configured loader.
-    let env_extras = load_env_or_fail(
+    // This currently serves as validation that the configured loader succeeds.
+    let _env_extras = load_env_or_fail(
         db,
         forgejo,
         &trigger,
@@ -1367,61 +891,49 @@ pub async fn dispatch_session(
         get_or_create_session(db, &trigger, &session_id, &worktree_path, existing_session).await?;
 
     // 8. Resolve API session immediately so acknowledgement can include link.
-    let mut api_session_id: Option<String> = None;
     let mut ack_session_web_url: Option<String> = None;
-    if config.opencode.transport == OpencodeTransport::Api {
-        let existing_external_id = external_session_id(&session_record);
-        let resolved_session_id = match resolve_opencode_api_session_id(
-            config,
-            &trigger,
-            &session_id,
-            existing_external_id,
-            &worktree_path,
+    let existing_external_id = external_session_id(&session_record);
+    let api_session_id = match resolve_opencode_api_session_id(
+        config,
+        &trigger,
+        &session_id,
+        existing_external_id,
+        &worktree_path,
+    )
+    .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            return handle_dispatch_failure(db, forgejo, &trigger, &session_id, &session_record, e)
+                .await;
+        }
+    };
+
+    if existing_external_id.is_none() {
+        if let Some(web_host) = config.opencode.web_host.as_deref() {
+            ack_session_web_url = Some(opencode_session_web_url(
+                web_host,
+                &session_record.worktree_path,
+                &api_session_id,
+            ));
+        }
+
+        if let Err(e) = update_issue_external_opencode_session_id(
+            db,
+            &trigger.repo_full_name,
+            trigger.issue_id as i64,
+            &api_session_id,
         )
         .await
         {
-            Ok(id) => id,
-            Err(e) => {
-                return handle_dispatch_failure(
-                    db,
-                    forgejo,
-                    &trigger,
-                    &session_id,
-                    &session_record,
-                    e,
-                )
-                .await;
-            }
-        };
-
-        if existing_external_id.is_none() {
-            if let Some(web_host) = config.opencode.web_host.as_deref() {
-                ack_session_web_url = Some(opencode_session_web_url(
-                    web_host,
-                    &session_record.worktree_path,
-                    &resolved_session_id,
-                ));
-            }
-
-            if let Err(e) = update_issue_external_opencode_session_id(
-                db,
-                &trigger.repo_full_name,
-                trigger.issue_id as i64,
-                &resolved_session_id,
-            )
-            .await
-            {
-                warn!(
-                    repo = %trigger.repo_full_name,
-                    issue_id = %trigger.issue_id,
-                    opencode_session_id = %resolved_session_id,
-                    err = %e,
-                    "Failed to persist resolved OpenCode API session ID before acknowledgement"
-                );
-            }
+            warn!(
+                repo = %trigger.repo_full_name,
+                issue_id = %trigger.issue_id,
+                opencode_session_id = %api_session_id,
+                err = %e,
+                "Failed to persist resolved OpenCode API session ID before acknowledgement"
+            );
         }
-
-        api_session_id = Some(resolved_session_id);
     }
 
     // 9. Post acknowledgement comment
@@ -1450,54 +962,11 @@ pub async fn dispatch_session(
         "Spawning opencode"
     );
 
-    let (opencode_result, completion_confirmed) = match config.opencode.transport {
-        OpencodeTransport::Cli => (
-            run_opencode(RunOpencodeParams {
-                config,
-                repo_full_name: &trigger.repo_full_name,
-                derived_session_id: &session_id,
-                external_opencode_session_id: external_session_id,
-                agent_mode,
-                model: &config.opencode.model,
-                worktree_path: &worktree_path,
-                prompt: &prompt,
-                env_extras,
-            })
-            .await,
-            true,
-        ),
-        OpencodeTransport::Api => {
-            let Some(resolved_session_id) = api_session_id.as_deref() else {
-                let invariant_err = anyhow!(
-                    "OpenCode API session ID was not resolved before prompt dispatch for {} issue {}",
-                    trigger.repo_full_name,
-                    trigger.issue_id
-                );
-                return handle_dispatch_failure(
-                    db,
-                    forgejo,
-                    &trigger,
-                    &session_id,
-                    &session_record,
-                    invariant_err,
-                )
-                .await;
-            };
-
-            (
-                run_opencode_api(
-                    config,
-                    &trigger,
-                    &worktree_path,
-                    &prompt,
-                    resolved_session_id,
-                )
-                .await
-                .map(Some),
-                false,
-            )
-        }
-    };
+    let opencode_result =
+        run_opencode_api(config, &trigger, &worktree_path, &prompt, &api_session_id)
+            .await
+            .map(Some);
+    let completion_confirmed = false;
 
     // 14. Handle result
     match opencode_result {
@@ -1534,79 +1003,12 @@ pub async fn dispatch_session(
 /// # Returns
 /// Always returns Ok(()) - failures are logged but don't block startup
 pub async fn startup_crash_recovery(
-    db: &DbPool,
-    forgejo: &ForgejoClient,
+    _db: &DbPool,
+    _forgejo: &ForgejoClient,
     _config: &Config,
 ) -> Result<usize> {
-    info!("Running startup crash recovery...");
-
-    let stuck_sessions = match get_sessions_in_state(db, SESSION_BUSY_STATES).await {
-        Ok(sessions) => sessions,
-        Err(e) => {
-            error!("Failed to query stuck sessions: {}", e);
-            return Ok(0); // Non-blocking
-        }
-    };
-
-    if stuck_sessions.is_empty() {
-        info!("No stuck sessions found, crash recovery complete");
-        return Ok(0);
-    }
-
-    let session_count = stuck_sessions.len();
-    info!(
-        session_count = %session_count,
-        "Found sessions stuck in progress, recovering"
-    );
-
-    for session in stuck_sessions {
-        warn!(
-            session_id = %session.id,
-            state = %session.state,
-            repo = %session.repo_full_name,
-            issue_id = %session.issue_id,
-            "Recovering stuck session"
-        );
-
-        // Set state to error
-        if let Err(e) = update_session_state(db, &session.id, SessionState::Error).await {
-            error!(
-                session_id = %session.id,
-                error = %e,
-                "Failed to set session to error state"
-            );
-            continue;
-        }
-
-        // Post recovery comment
-        let recovery_msg =
-            "⚠️ forgebot restarted mid-run. The session has been reset. Please retry your command.";
-
-        if let Err(e) = forgejo
-            .post_issue_comment(
-                &session.repo_full_name,
-                session.issue_id as u64,
-                recovery_msg,
-            )
-            .await
-        {
-            error!(
-                "Failed to post recovery comment for session {}: {}",
-                session.id, e
-            );
-        } else {
-            info!(
-                session_id = %session.id,
-                "Posted recovery comment"
-            );
-        }
-    }
-
-    info!(
-        recovered_count = %session_count,
-        "Crash recovery complete"
-    );
-    Ok(session_count)
+    info!("Startup crash recovery skipped: session lifecycle is tracked by OpenCode API state");
+    Ok(0)
 }
 
 #[cfg(test)]
@@ -1633,7 +1035,6 @@ mod tests {
             git_binary: "git".to_string(),
             model: "opencode/kimi-k2.5".to_string(),
             web_host: None,
-            transport: crate::config::OpencodeTransport::Cli,
             api: crate::config::OpencodeApiConfig {
                 base_url: None,
                 token: None,
@@ -1646,6 +1047,7 @@ mod tests {
 
         // Verify all files exist
         assert!(temp_dir.join("package.json").exists());
+        assert!(temp_dir.join("opencode.json").exists());
         assert!(temp_dir.join("agents").join("forgebot.md").exists());
         assert!(temp_dir.join("tools").join("comment-issue.ts").exists());
         assert!(temp_dir.join("tools").join("comment-pr.ts").exists());
@@ -1654,6 +1056,10 @@ mod tests {
         // Verify content was written correctly
         let package_json_content = std::fs::read_to_string(temp_dir.join("package.json")).unwrap();
         assert!(package_json_content.contains("@opencode-ai/plugin"));
+
+        let opencode_json_content =
+            std::fs::read_to_string(temp_dir.join("opencode.json")).unwrap();
+        assert!(opencode_json_content.contains("\"permission\": \"allow\""));
 
         let agent_content =
             std::fs::read_to_string(temp_dir.join("agents").join("forgebot.md")).unwrap();
@@ -1684,7 +1090,6 @@ mod tests {
             git_binary: "git".to_string(),
             model: "opencode/kimi-k2.5".to_string(),
             web_host: None,
-            transport: crate::config::OpencodeTransport::Cli,
             api: crate::config::OpencodeApiConfig {
                 base_url: None,
                 token: None,
@@ -1733,6 +1138,15 @@ mod tests {
             ..derived
         };
         assert_eq!(external_session_id(&external), Some("oc_123"));
+
+        let api_prefixed = Session {
+            opencode_session_id: "ses_322440d07ffe7SGZDgAqvamd5v".to_string(),
+            ..external
+        };
+        assert_eq!(
+            external_session_id(&api_prefixed),
+            Some("ses_322440d07ffe7SGZDgAqvamd5v")
+        );
     }
 
     #[test]

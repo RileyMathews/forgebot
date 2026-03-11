@@ -132,6 +132,20 @@ impl ForgejoClient {
         .await
     }
 
+    /// Get the authenticated user for the configured token
+    pub async fn get_authenticated_user(&self) -> Result<User> {
+        let path = "/api/v1/user";
+        debug!("Fetching authenticated user from: {}", self.api_url(path));
+
+        self.send_json(
+            self.request_builder(Method::GET, path),
+            || "Failed to send request to get authenticated user".to_string(),
+            || "Failed to parse authenticated user response".to_string(),
+            "Failed to get authenticated user",
+        )
+        .await
+    }
+
     /// List comments on an issue
     pub async fn list_issue_comments(
         &self,

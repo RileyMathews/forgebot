@@ -46,7 +46,6 @@ async fn main() -> Result<()> {
         database_path = %config.database.path.to_string_lossy(),
         worktree_base = %config.opencode.worktree_base.to_string_lossy(),
         opencode_binary = %config.opencode.binary,
-        opencode_transport = %config.opencode.transport.as_str(),
         opencode_api_base_url = %config
             .opencode
             .api
@@ -56,26 +55,23 @@ async fn main() -> Result<()> {
         "Configuration loaded successfully"
     );
 
-    if config.opencode.transport == config::OpencodeTransport::Api {
-        let api_client =
-            session::opencode_api::OpencodeApiClient::from_config(&config.opencode.api)
-                .context("Failed to initialize OpenCode API client")?;
-        let health = api_client
-            .health()
-            .await
-            .context("Failed OpenCode API startup health check")?;
-        if !health.healthy {
-            anyhow::bail!(
-                "OpenCode API health check returned unhealthy status (version={})",
-                health.version
-            );
-        }
-
-        info!(
-            opencode_api_version = %health.version,
-            "OpenCode API startup health check passed"
+    let api_client = session::opencode_api::OpencodeApiClient::from_config(&config.opencode.api)
+        .context("Failed to initialize OpenCode API client")?;
+    let health = api_client
+        .health()
+        .await
+        .context("Failed OpenCode API startup health check")?;
+    if !health.healthy {
+        anyhow::bail!(
+            "OpenCode API health check returned unhealthy status (version={})",
+            health.version
         );
     }
+
+    info!(
+        opencode_api_version = %health.version,
+        "OpenCode API startup health check passed"
+    );
 
     // Initialize database
     let db_pool = db::init_db(&config.database)
@@ -114,6 +110,26 @@ async fn main() -> Result<()> {
         "Forgejo client initialized successfully"
     );
 
+    let authenticated_user = forgejo_client
+        .get_authenticated_user()
+        .await
+        .context("Failed to resolve authenticated Forgejo user")?;
+
+    if authenticated_user.login != config.forgejo.bot_username {
+        warn!(
+            configured_bot_username = %config.forgejo.bot_username,
+            authenticated_login = %authenticated_user.login,
+            authenticated_user_id = %authenticated_user.id,
+            "Configured FORGEBOT_FORGEJO_BOT_USERNAME does not match token identity"
+        );
+    }
+
+    info!(
+        authenticated_login = %authenticated_user.login,
+        authenticated_user_id = %authenticated_user.id,
+        "Resolved authenticated Forgejo user for webhook loop prevention"
+    );
+
     // Run startup crash recovery before starting the server
     let recovery_result =
         session::opencode::startup_crash_recovery(&db_pool, &forgejo_client, &config).await;
@@ -135,7 +151,13 @@ async fn main() -> Result<()> {
 
     // Create shared application state
     let config = Arc::new(config);
-    let app_state = webhook::AppState::new(config.clone(), db_pool.clone(), forgejo_client.clone());
+    let app_state = webhook::AppState::new(
+        config.clone(),
+        db_pool.clone(),
+        forgejo_client.clone(),
+        authenticated_user.id,
+        authenticated_user.login,
+    );
 
     // Start webhook server - this will block until the server shuts down
     info!(

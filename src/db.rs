@@ -6,7 +6,7 @@ use std::path::Path;
 use tracing::{debug, info};
 
 use crate::config::DatabaseConfig;
-use crate::session::{CloneStatus, SessionMode, SessionState};
+use crate::session::{CloneStatus, SessionMode, SessionState, derive_session_id};
 
 /// Type alias for SQLite connection pool
 pub type DbPool = Pool<Sqlite>;
@@ -742,9 +742,15 @@ pub async fn remove_pending_worktree(pool: &DbPool, session_id: &str) -> Result<
     Ok(())
 }
 
-fn normalize_external_opencode_session_id(value: &str) -> Option<&str> {
+fn normalize_external_opencode_session_id<'a>(
+    value: &'a str,
+    repo_full_name: &str,
+    issue_id: i64,
+) -> Option<&'a str> {
     let trimmed = value.trim();
-    if trimmed.is_empty() || trimmed.starts_with("ses_") {
+    let derived_placeholder = derive_session_id(repo_full_name, issue_id as u64);
+
+    if trimmed.is_empty() || trimmed == derived_placeholder {
         None
     } else {
         Some(trimmed)
@@ -754,7 +760,7 @@ fn normalize_external_opencode_session_id(value: &str) -> Option<&str> {
 /// Resolve the persisted external OpenCode session ID for an issue.
 ///
 /// Returns `Ok(None)` when there is no session record, or when the stored value
-/// is a derived/legacy placeholder (for example `ses_*`) or empty.
+/// is the derived placeholder session ID for this issue or empty.
 pub async fn get_issue_external_opencode_session_id(
     pool: &DbPool,
     repo_full_name: &str,
@@ -780,7 +786,8 @@ pub async fn get_issue_external_opencode_session_id(
 
     Ok(row.and_then(|row| {
         let value: String = row.get("opencode_session_id");
-        normalize_external_opencode_session_id(&value).map(ToString::to_string)
+        normalize_external_opencode_session_id(&value, repo_full_name, issue_id)
+            .map(ToString::to_string)
     }))
 }
 
@@ -791,9 +798,14 @@ pub async fn update_issue_external_opencode_session_id(
     issue_id: i64,
     opencode_session_id: &str,
 ) -> Result<()> {
-    let normalized = normalize_external_opencode_session_id(opencode_session_id).ok_or_else(|| {
+    let normalized = normalize_external_opencode_session_id(
+        opencode_session_id,
+        repo_full_name,
+        issue_id,
+    )
+    .ok_or_else(|| {
         anyhow::anyhow!(
-            "Invalid external OpenCode session ID '{}': value cannot be empty or a derived placeholder",
+            "Invalid external OpenCode session ID '{}': value cannot be empty or equal to derived placeholder",
             opencode_session_id
         )
     })?;
@@ -959,7 +971,7 @@ mod tests {
             .await
             .expect("test db should initialize");
 
-        insert_test_session(&pool, "owner/repo-derived", 1, "ses_1_owner_repo").await;
+        insert_test_session(&pool, "owner/repo-derived", 1, "ses_1_owner_repo_derived").await;
         insert_test_session(&pool, "owner/repo-empty", 2, "   ").await;
         insert_test_session(&pool, "owner/repo-external", 3, "oc_123").await;
 
@@ -1010,6 +1022,23 @@ mod tests {
             .expect("repeat lookup should succeed");
         assert_eq!(reused, Some("oc_999".to_string()));
 
+        update_issue_external_opencode_session_id(
+            &pool,
+            "owner/repo",
+            9,
+            "ses_322440d07ffe7SGZDgAqvamd5v",
+        )
+        .await
+        .expect("API session IDs with ses_ prefix should be accepted");
+
+        let api_prefixed = get_issue_external_opencode_session_id(&pool, "owner/repo", 9)
+            .await
+            .expect("lookup should succeed");
+        assert_eq!(
+            api_prefixed,
+            Some("ses_322440d07ffe7SGZDgAqvamd5v".to_string())
+        );
+
         pool.close().await;
         cleanup_test_db(&db_path);
     }
@@ -1032,7 +1061,11 @@ mod tests {
             update_issue_external_opencode_session_id(&pool, "owner/repo", 11, "ses_11_owner_repo")
                 .await
                 .expect_err("derived placeholder should be rejected");
-        assert!(derived_err.to_string().contains("derived placeholder"));
+        assert!(
+            derived_err
+                .to_string()
+                .contains("equal to derived placeholder")
+        );
 
         let still_unset = get_issue_external_opencode_session_id(&pool, "owner/repo", 11)
             .await

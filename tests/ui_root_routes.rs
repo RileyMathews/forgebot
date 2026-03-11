@@ -6,8 +6,7 @@ use anyhow::{Context, Result};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use forgebot::config::{
-    Config, DatabaseConfig, ForgejoConfig, OpencodeApiConfig, OpencodeConfig, OpencodeTransport,
-    ServerConfig,
+    Config, DatabaseConfig, ForgejoConfig, OpencodeApiConfig, OpencodeConfig, ServerConfig,
 };
 use forgebot::db::init_db_at_path;
 use forgebot::forgejo::ForgejoClient;
@@ -53,7 +52,6 @@ async fn make_test_app() -> Result<(axum::Router, PathBuf)> {
             git_binary: "git".to_string(),
             model: "opencode/kimi-k2.5".to_string(),
             web_host: None,
-            transport: OpencodeTransport::Cli,
             api: OpencodeApiConfig {
                 base_url: None,
                 token: None,
@@ -68,7 +66,7 @@ async fn make_test_app() -> Result<(axum::Router, PathBuf)> {
         &config.forgejo.token,
         &config.forgejo.bot_username,
     )?;
-    let state = AppState::new(Arc::new(config), db, forgejo);
+    let state = AppState::new(Arc::new(config), db, forgejo, 1, "forgebot".to_string());
 
     Ok((create_app_router(state), temp_dir))
 }
