@@ -25,7 +25,9 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::time::Duration;
 use tokio::process::Command;
+use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 
 // Template files embedded at compile time
@@ -399,7 +401,7 @@ esac
 
     // Try to capture the opencode session ID
     let captured_session_id = if status.success() {
-        match capture_opencode_session_id(binary, derived_session_id).await {
+        match capture_opencode_session_id(&binary_path, derived_session_id, &env_vars).await {
             Ok(Some(id)) => {
                 info!("Captured opencode session ID: {}", id);
                 Some(id)
@@ -438,47 +440,72 @@ esac
 
 /// Capture the opencode session ID by querying the session list.
 /// Looks for a session with the given title (which we set to our derived_session_id).
-async fn capture_opencode_session_id(binary: &str, title: &str) -> Result<Option<String>> {
-    // Query opencode session list
-    let output = Command::new(binary)
-        .arg("session")
-        .arg("list")
-        .arg("--format")
-        .arg("json")
-        .arg("-n")
-        .arg("5") // Get 5 most recent sessions
-        .output()
-        .await
-        .context("Failed to run opencode session list")?;
+async fn capture_opencode_session_id(
+    binary_path: &str,
+    title: &str,
+    env_vars: &HashMap<String, String>,
+) -> Result<Option<String>> {
+    const ATTEMPTS: usize = 5;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("opencode session list failed: {}", stderr);
-    }
+    for attempt in 1..=ATTEMPTS {
+        let output = Command::new(binary_path)
+            .arg("session")
+            .arg("list")
+            .arg("--format")
+            .arg("json")
+            .arg("-n")
+            .arg("50")
+            .envs(env_vars)
+            .output()
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to run opencode session list (attempt {}/{})",
+                    attempt, ATTEMPTS
+                )
+            })?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!(
+                "opencode session list failed on attempt {}/{}: {}",
+                attempt,
+                ATTEMPTS,
+                stderr
+            );
+        }
 
-    // Parse JSON output to find session with matching title
-    // The output is an array of session objects
-    // We need to find the one with title matching our derived_session_id
-    match serde_json::from_str::<serde_json::Value>(&stdout) {
-        Ok(sessions) => {
-            if let Some(sessions_array) = sessions.as_array() {
-                for session in sessions_array {
-                    if let Some(session_title) = session.get("title").and_then(|t| t.as_str())
-                        && session_title == title
-                        && let Some(session_id) = session.get("id").and_then(|id| id.as_str())
-                    {
-                        return Ok(Some(session_id.to_string()));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        match serde_json::from_str::<serde_json::Value>(&stdout) {
+            Ok(sessions) => {
+                if let Some(sessions_array) = sessions.as_array() {
+                    for session in sessions_array {
+                        if let Some(session_title) = session.get("title").and_then(|t| t.as_str())
+                            && session_title == title
+                            && let Some(session_id) = session.get("id").and_then(|id| id.as_str())
+                        {
+                            return Ok(Some(session_id.to_string()));
+                        }
                     }
                 }
             }
-            Ok(None)
+            Err(e) => {
+                anyhow::bail!(
+                    "Failed to parse opencode session list JSON on attempt {}/{}: {}",
+                    attempt,
+                    ATTEMPTS,
+                    e
+                );
+            }
         }
-        Err(e) => {
-            anyhow::bail!("Failed to parse opencode session list JSON: {}", e)
+
+        if attempt < ATTEMPTS {
+            sleep(Duration::from_millis((attempt as u64) * 200)).await;
         }
     }
+
+    Ok(None)
 }
 
 struct IssueContext {
@@ -801,6 +828,23 @@ async fn handle_dispatch_success(
             error!("Failed to update session with opencode ID: {}", e);
         }
         effective_session_id = Some(new_session_id);
+    }
+
+    if should_post_web_link && effective_session_id.is_none() {
+        let continuity_err = anyhow!(
+            "failed to capture opencode session ID; cannot establish session continuity for {} issue {}",
+            trigger.repo_full_name,
+            trigger.issue_id
+        );
+        return handle_dispatch_failure(
+            db,
+            forgejo,
+            trigger,
+            session_id,
+            session_record,
+            continuity_err,
+        )
+        .await;
     }
 
     let web_host = config.opencode.web_host.as_deref();
