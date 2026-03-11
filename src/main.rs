@@ -46,6 +46,13 @@ async fn main() -> Result<()> {
         database_path = %config.database.path.to_string_lossy(),
         worktree_base = %config.opencode.worktree_base.to_string_lossy(),
         opencode_binary = %config.opencode.binary,
+        opencode_transport = %config.opencode.transport.as_str(),
+        opencode_api_base_url = %config
+            .opencode
+            .api
+            .base_url
+            .as_deref()
+            .unwrap_or("[not set]"),
         "Configuration loaded successfully"
     );
 

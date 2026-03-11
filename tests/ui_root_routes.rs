@@ -5,7 +5,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use forgebot::config::{Config, DatabaseConfig, ForgejoConfig, OpencodeConfig, ServerConfig};
+use forgebot::config::{
+    Config, DatabaseConfig, ForgejoConfig, OpencodeApiConfig, OpencodeConfig, OpencodeTransport,
+    ServerConfig,
+};
 use forgebot::db::init_db_at_path;
 use forgebot::forgejo::ForgejoClient;
 use forgebot::webhook::{AppState, create_app_router};
@@ -50,6 +53,12 @@ async fn make_test_app() -> Result<(axum::Router, PathBuf)> {
             git_binary: "git".to_string(),
             model: "opencode/kimi-k2.5".to_string(),
             web_host: None,
+            transport: OpencodeTransport::Cli,
+            api: OpencodeApiConfig {
+                base_url: None,
+                token: None,
+                timeout_secs: 30,
+            },
         },
         database: DatabaseConfig { path: db_path },
     };

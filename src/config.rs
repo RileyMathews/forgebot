@@ -1,5 +1,7 @@
-use anyhow::Result;
 use std::path::PathBuf;
+
+use anyhow::{Context, Result};
+use reqwest::Url;
 use tracing::{info, warn};
 
 #[derive(Debug, Clone)]
@@ -33,6 +35,30 @@ pub struct OpencodeConfig {
     pub git_binary: String,
     pub model: String,
     pub web_host: Option<String>,
+    pub transport: OpencodeTransport,
+    pub api: OpencodeApiConfig,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpencodeTransport {
+    Cli,
+    Api,
+}
+
+impl OpencodeTransport {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cli => "cli",
+            Self::Api => "api",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct OpencodeApiConfig {
+    pub base_url: Option<String>,
+    pub token: Option<String>,
+    pub timeout_secs: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -47,8 +73,8 @@ pub fn webhook_url(config: &Config) -> String {
 impl Config {
     /// Load configuration entirely from environment variables.
     /// Required env vars (must be set or error): FORGEBOT_WEBHOOK_SECRET, FORGEBOT_FORGEJO_URL, FORGEBOT_FORGEJO_TOKEN
-    /// Optional env vars (have defaults): FORGEBOT_SERVER_HOST, FORGEBOT_SERVER_PORT, FORGEBOT_FORGEJO_BOT_USERNAME, FORGEBOT_OPENCODE_BINARY, FORGEBOT_OPENCODE_WORKTREE_BASE, FORGEBOT_OPENCODE_CONFIG_DIR, FORGEBOT_DATABASE_PATH
-    /// Optional env vars (unset by default): FORGEBOT_OPENCODE_WEB_HOST
+    /// Optional env vars (have defaults): FORGEBOT_SERVER_HOST, FORGEBOT_SERVER_PORT, FORGEBOT_FORGEJO_BOT_USERNAME, FORGEBOT_OPENCODE_BINARY, FORGEBOT_OPENCODE_WORKTREE_BASE, FORGEBOT_OPENCODE_CONFIG_DIR, FORGEBOT_DATABASE_PATH, FORGEBOT_OPENCODE_TRANSPORT, FORGEBOT_OPENCODE_API_TIMEOUT_SECS
+    /// Optional env vars (unset by default): FORGEBOT_OPENCODE_WEB_HOST, FORGEBOT_OPENCODE_API_BASE_URL, FORGEBOT_OPENCODE_API_TOKEN
     pub fn load() -> Result<Self> {
         info!("Loading configuration from environment variables...");
 
@@ -95,6 +121,14 @@ impl Config {
         let git_binary = env_var_with_default("FORGEBOT_GIT_BINARY", "git");
         let opencode_model = env_var_with_default("FORGEBOT_OPENCODE_MODEL", "opencode/kimi-k2.5");
         let opencode_web_host = env_var_optional("FORGEBOT_OPENCODE_WEB_HOST");
+        let opencode_transport =
+            parse_opencode_transport(&env_var_with_default("FORGEBOT_OPENCODE_TRANSPORT", "cli"))?;
+        let opencode_api_base_url = env_var_optional("FORGEBOT_OPENCODE_API_BASE_URL")
+            .map(|value| validate_http_url("FORGEBOT_OPENCODE_API_BASE_URL", &value))
+            .transpose()?;
+        let opencode_api_token = env_var_optional("FORGEBOT_OPENCODE_API_TOKEN");
+        let opencode_api_timeout_secs =
+            env_var_parse_u64_with_default("FORGEBOT_OPENCODE_API_TIMEOUT_SECS", 30)?;
         let worktree_base = env_var_path_with_default(
             "FORGEBOT_OPENCODE_WORKTREE_BASE",
             "/var/lib/forgebot/worktrees",
@@ -105,6 +139,12 @@ impl Config {
         );
         let database_path =
             env_var_path_with_default("FORGEBOT_DATABASE_PATH", "/var/lib/forgebot/forgebot.db");
+
+        if opencode_transport == OpencodeTransport::Api && opencode_api_base_url.is_none() {
+            anyhow::bail!(
+                "ERROR: FORGEBOT_OPENCODE_API_BASE_URL is required when FORGEBOT_OPENCODE_TRANSPORT=api"
+            );
+        }
 
         info!("Configuration loaded successfully");
         info!("  FORGEBOT_SERVER_HOST: {}", server_host);
@@ -117,6 +157,26 @@ impl Config {
         info!("  FORGEBOT_OPENCODE_BINARY: {}", opencode_binary);
         info!("  FORGEBOT_GIT_BINARY: {}", git_binary);
         info!("  FORGEBOT_OPENCODE_MODEL: {}", opencode_model);
+        info!(
+            "  FORGEBOT_OPENCODE_TRANSPORT: {}",
+            opencode_transport.as_str()
+        );
+        match &opencode_api_base_url {
+            Some(url) => info!("  FORGEBOT_OPENCODE_API_BASE_URL: {}", url),
+            None => info!("  FORGEBOT_OPENCODE_API_BASE_URL: [not set]"),
+        }
+        info!(
+            "  FORGEBOT_OPENCODE_API_TOKEN: {}",
+            if opencode_api_token.is_some() {
+                "[REDACTED]"
+            } else {
+                "[not set]"
+            }
+        );
+        info!(
+            "  FORGEBOT_OPENCODE_API_TIMEOUT_SECS: {}",
+            opencode_api_timeout_secs
+        );
         match &opencode_web_host {
             Some(host) => info!("  FORGEBOT_OPENCODE_WEB_HOST: {}", host),
             None => warn!(
@@ -149,6 +209,12 @@ impl Config {
                 git_binary,
                 model: opencode_model,
                 web_host: opencode_web_host,
+                transport: opencode_transport,
+                api: OpencodeApiConfig {
+                    base_url: opencode_api_base_url,
+                    token: opencode_api_token,
+                    timeout_secs: opencode_api_timeout_secs,
+                },
             },
             database: DatabaseConfig {
                 path: database_path,
@@ -216,6 +282,29 @@ fn env_var_parse_with_default(name: &str, default: u16) -> Result<u16> {
     }
 }
 
+/// Parse an environment variable as u64 with a default value.
+fn env_var_parse_u64_with_default(name: &str, default: u64) -> Result<u64> {
+    match std::env::var(name) {
+        Ok(value) if !value.trim().is_empty() => match value.parse::<u64>() {
+            Ok(parsed) => {
+                info!("Using {} from environment variable: {}", name, parsed);
+                Ok(parsed)
+            }
+            Err(_) => {
+                anyhow::bail!(
+                    "ERROR: {} has invalid value '{}'. Expected an integer.",
+                    name,
+                    value
+                )
+            }
+        },
+        _ => {
+            warn!("{} not set or empty, using default: {}", name, default);
+            Ok(default)
+        }
+    }
+}
+
 /// Get an environment variable as a PathBuf with a default value.
 fn env_var_path_with_default(name: &str, default: &str) -> PathBuf {
     match std::env::var(name) {
@@ -238,6 +327,33 @@ fn env_var_optional(name: &str) -> Option<String> {
         }
         _ => None,
     }
+}
+
+fn parse_opencode_transport(value: &str) -> Result<OpencodeTransport> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "cli" => Ok(OpencodeTransport::Cli),
+        "api" => Ok(OpencodeTransport::Api),
+        other => anyhow::bail!(
+            "ERROR: FORGEBOT_OPENCODE_TRANSPORT must be one of: cli, api (got '{}')",
+            other
+        ),
+    }
+}
+
+fn validate_http_url(var_name: &str, value: &str) -> Result<String> {
+    let trimmed = value.trim();
+    let parsed = Url::parse(trimmed)
+        .with_context(|| format!("ERROR: {} is not a valid URL: {}", var_name, trimmed))?;
+
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        anyhow::bail!(
+            "ERROR: {} must use http or https scheme (got '{}')",
+            var_name,
+            parsed.scheme()
+        );
+    }
+
+    Ok(trimmed.trim_end_matches('/').to_string())
 }
 
 #[cfg(test)]
@@ -270,6 +386,27 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_opencode_transport() {
+        assert_eq!(
+            parse_opencode_transport("cli").expect("cli should parse"),
+            OpencodeTransport::Cli
+        );
+        assert_eq!(
+            parse_opencode_transport("API").expect("api should parse"),
+            OpencodeTransport::Api
+        );
+        assert!(parse_opencode_transport("invalid").is_err());
+    }
+
+    #[test]
+    fn test_validate_http_url() {
+        let normalized = validate_http_url("FORGEBOT_TEST_URL", "https://example.com/")
+            .expect("https url should parse");
+        assert_eq!(normalized, "https://example.com");
+        assert!(validate_http_url("FORGEBOT_TEST_URL", "ftp://example.com").is_err());
+    }
+
+    #[test]
     fn test_webhook_url() {
         let config = Config {
             server: ServerConfig {
@@ -290,6 +427,12 @@ mod tests {
                 git_binary: "git".to_string(),
                 model: "opencode/kimi-k2.5".to_string(),
                 web_host: None,
+                transport: OpencodeTransport::Cli,
+                api: OpencodeApiConfig {
+                    base_url: None,
+                    token: None,
+                    timeout_secs: 30,
+                },
             },
             database: DatabaseConfig {
                 path: PathBuf::from("/tmp/test.db"),
