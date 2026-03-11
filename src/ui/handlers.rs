@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tracing::{error, info, warn};
 
 use crate::db::{
-    get_repo_by_full_name, list_repos, reset_clone_status_if_failed, update_repo_env_loader,
+    Repo, get_repo_by_full_name, list_repos, reset_clone_status_if_failed, update_repo_env_loader,
     validate_repo_full_name,
 };
 use crate::forgejo::ForgejoClient;
@@ -204,44 +204,8 @@ pub async fn repo_setup(
         }
     };
 
-    // Build webhook URL and secret
-    let webhook_url = format_webhook_url(&state.config);
-    let webhook_secret = state.config.server.webhook_secret.clone();
-
-    // Check webhook registration status
-    let webhook_registered = check_webhook_status(&state.forgejo, &full_name, &state.config).await;
-
-    // Verify token permissions
-    let token_valid = state
-        .forgejo
-        .check_token_permissions(&full_name)
-        .await
-        .unwrap_or(false);
-
-    // Check opencode binary
-    let opencode_path = &state.config.opencode.binary;
-    let opencode_exists = which::which(opencode_path).is_ok() || Path::new(opencode_path).exists();
-
-    // Check config files (basic check for config dir existence)
-    let config_files_exist = state.config.opencode.config_dir.exists();
-
-    let template = RepoSetupTemplate {
-        full_name: full_name.clone(),
-        owner: owner.clone(),
-        name: name.clone(),
-        default_branch: repo.default_branch,
-        env_loader: repo.env_loader,
-        clone_status: repo.clone_status.as_str().to_string(),
-        webhook_registered,
-        webhook_url,
-        webhook_secret,
-        token_valid,
-        opencode_exists,
-        opencode_path: opencode_path.clone(),
-        config_files_exist,
-        message: None,
-        success: true,
-    };
+    let template =
+        build_repo_setup_template(&state, owner, name, full_name, repo, None, true).await;
 
     match template.render() {
         Ok(html) => Html(html).into_response(),
@@ -463,28 +427,39 @@ async fn render_repo_setup_with_message(
         }
     };
 
-    // Build webhook URL and secret
+    let template =
+        build_repo_setup_template(&state, owner, name, full_name, repo, Some(message), success)
+            .await;
+
+    match template.render() {
+        Ok(html) => Html(html).into_response(),
+        Err(e) => internal_error_response(format!("Template error: {}", e)),
+    }
+}
+
+async fn build_repo_setup_template(
+    state: &AppState,
+    owner: String,
+    name: String,
+    full_name: String,
+    repo: Repo,
+    message: Option<String>,
+    success: bool,
+) -> RepoSetupTemplate {
     let webhook_url = format_webhook_url(&state.config);
     let webhook_secret = state.config.server.webhook_secret.clone();
-
-    // Check webhook registration status
     let webhook_registered = check_webhook_status(&state.forgejo, &full_name, &state.config).await;
-
-    // Verify token permissions
     let token_valid = state
         .forgejo
         .check_token_permissions(&full_name)
         .await
         .unwrap_or(false);
 
-    // Check opencode binary
     let opencode_path = &state.config.opencode.binary;
     let opencode_exists = which::which(opencode_path).is_ok() || Path::new(opencode_path).exists();
-
-    // Check config files
     let config_files_exist = state.config.opencode.config_dir.exists();
 
-    let template = RepoSetupTemplate {
+    RepoSetupTemplate {
         full_name,
         owner,
         name,
@@ -498,13 +473,8 @@ async fn render_repo_setup_with_message(
         opencode_exists,
         opencode_path: opencode_path.clone(),
         config_files_exist,
-        message: Some(message),
+        message,
         success,
-    };
-
-    match template.render() {
-        Ok(html) => Html(html).into_response(),
-        Err(e) => internal_error_response(format!("Template error: {}", e)),
     }
 }
 
