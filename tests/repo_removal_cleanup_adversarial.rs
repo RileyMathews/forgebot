@@ -7,43 +7,11 @@
 //! - Database deletion as final step (can fail and propagate)
 //! - Logging and error context
 
-use forgebot::db::{
-    DbPool, NewSession, delete_repo, get_sessions_for_repo, init_db_at_path, insert_repo,
-    insert_session,
-};
-use std::sync::atomic::{AtomicU64, Ordering};
+use forgebot::db::{NewSession, delete_repo, get_sessions_for_repo, insert_repo, insert_session};
 
-static TEST_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
+mod common;
 
-// ============================================================================
-// Test Helpers
-// ============================================================================
-
-/// Create an isolated test database with unique path per test
-async fn setup_test_db() -> (DbPool, std::path::PathBuf) {
-    let test_id = TEST_DB_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let test_dir = std::env::temp_dir().join(format!(
-        "forgebot-cleanup-removal-test-{}-{}",
-        std::process::id(),
-        test_id
-    ));
-
-    // Clean up any existing test database
-    let _ = std::fs::remove_dir_all(&test_dir);
-    std::fs::create_dir_all(&test_dir).expect("Failed to create test dir");
-
-    let db_path = test_dir.join("test.db");
-    let pool = init_db_at_path(&db_path)
-        .await
-        .expect("Failed to initialize test database");
-
-    (pool, test_dir)
-}
-
-/// Cleanup test database
-fn cleanup_test_db(test_dir: &std::path::PathBuf) {
-    let _ = std::fs::remove_dir_all(test_dir);
-}
+use common::{cleanup_test_db, setup_test_db};
 
 // ============================================================================
 // Test Group 1: Database Behavior During Cleanup

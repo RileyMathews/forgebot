@@ -8,62 +8,13 @@
 //! - Startup crash recovery (stuck "cloning" → "failed")
 
 use forgebot::db::{
-    DbPool, get_repo_by_full_name, init_db_at_path, insert_repo,
-    recover_stuck_clones_after_restart, reset_clone_status_if_failed, update_repo_clone_status,
-    validate_repo_full_name,
+    get_repo_by_full_name, recover_stuck_clones_after_restart, reset_clone_status_if_failed,
+    update_repo_clone_status, validate_repo_full_name,
 };
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 
-static TEST_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
+mod common;
 
-// ============================================================================
-// Test Helpers
-// ============================================================================
-
-/// Create an isolated test database with unique path per test
-async fn setup_test_db() -> (DbPool, PathBuf) {
-    let test_id = TEST_DB_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let test_dir = std::env::temp_dir().join(format!(
-        "forgebot-auto-clone-test-{}-{}",
-        std::process::id(),
-        test_id
-    ));
-
-    // Clean up any existing test database
-    let _ = std::fs::remove_dir_all(&test_dir);
-    std::fs::create_dir_all(&test_dir).expect("Failed to create test dir");
-
-    let db_path = test_dir.join("test.db");
-    let pool = init_db_at_path(&db_path)
-        .await
-        .expect("Failed to initialize test database");
-
-    (pool, test_dir)
-}
-
-/// Insert a repo with specified initial clone status
-async fn insert_test_repo(
-    pool: &DbPool,
-    full_name: &str,
-    clone_status: &str,
-) -> anyhow::Result<()> {
-    // Use full_name as ID to ensure uniqueness
-    let repo_id = format!("repo-{}", full_name.replace('/', "-"));
-    insert_repo(pool, &repo_id, full_name, "main", "nix").await?;
-
-    // Update to desired clone_status (insert defaults to 'pending')
-    if clone_status != "pending" {
-        update_repo_clone_status(pool, full_name, clone_status, None).await?;
-    }
-
-    Ok(())
-}
-
-/// Cleanup test database
-fn cleanup_test_db(test_dir: &PathBuf) {
-    let _ = std::fs::remove_dir_all(test_dir);
-}
+use common::{cleanup_test_db, insert_test_repo, setup_test_db};
 
 // ============================================================================
 // Test 1: Invalid Repository Names Validation
