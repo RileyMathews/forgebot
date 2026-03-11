@@ -8,7 +8,8 @@
 
 use crate::config::{Config, OpencodeConfig};
 use crate::db::{
-    DbPool, NewSession, Session, get_sessions_in_state, insert_session, update_session_state,
+    DbPool, NewSession, Session, get_issue_external_opencode_session_id, get_sessions_in_state,
+    insert_session, update_issue_external_opencode_session_id, update_session_state,
 };
 use crate::forgejo::ForgejoClient;
 use crate::forgejo::models::{Issue, IssueComment, PullRequestReviewComment};
@@ -852,10 +853,11 @@ fn build_session_env(
 }
 
 fn external_session_id(session: &Session) -> Option<&str> {
-    if session.opencode_session_id.starts_with("ses_") {
+    let opencode_session_id = session.opencode_session_id.trim();
+    if opencode_session_id.is_empty() || opencode_session_id.starts_with("ses_") {
         None
     } else {
-        Some(session.opencode_session_id.as_str())
+        Some(opencode_session_id)
     }
 }
 
@@ -875,16 +877,22 @@ async fn handle_dispatch_success(
         "Session completed successfully"
     );
 
-    let should_post_web_link = session_record.opencode_session_id.starts_with("ses_");
-    let mut effective_session_id = if should_post_web_link {
-        None
-    } else {
-        Some(session_record.opencode_session_id.clone())
-    };
+    let mut effective_session_id = get_issue_external_opencode_session_id(
+        db,
+        &trigger.repo_full_name,
+        trigger.issue_id as i64,
+    )
+    .await?;
+    let should_post_web_link = effective_session_id.is_none();
 
     if let Some(new_session_id) = captured_session_id {
-        if let Err(e) =
-            crate::db::update_session_opencode_id(db, &session_record.id, &new_session_id).await
+        if let Err(e) = update_issue_external_opencode_session_id(
+            db,
+            &trigger.repo_full_name,
+            trigger.issue_id as i64,
+            &new_session_id,
+        )
+        .await
         {
             error!("Failed to update session with opencode ID: {}", e);
         }
@@ -1336,5 +1344,34 @@ mod tests {
 
         // Clean up
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_external_session_id_filters_derived_and_empty_values() {
+        let derived = Session {
+            id: "1".to_string(),
+            repo_full_name: "owner/repo".to_string(),
+            issue_id: 1,
+            pr_id: None,
+            opencode_session_id: "ses_1_owner_repo".to_string(),
+            worktree_path: "/tmp/worktree".to_string(),
+            state: SessionState::Idle,
+            mode: crate::session::SessionMode::Collab,
+            created_at: "now".to_string(),
+            updated_at: "now".to_string(),
+        };
+        assert_eq!(external_session_id(&derived), None);
+
+        let empty = Session {
+            opencode_session_id: "   ".to_string(),
+            ..derived.clone()
+        };
+        assert_eq!(external_session_id(&empty), None);
+
+        let external = Session {
+            opencode_session_id: "oc_123".to_string(),
+            ..derived
+        };
+        assert_eq!(external_session_id(&external), Some("oc_123"));
     }
 }

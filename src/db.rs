@@ -742,6 +742,99 @@ pub async fn remove_pending_worktree(pool: &DbPool, session_id: &str) -> Result<
     Ok(())
 }
 
+fn normalize_external_opencode_session_id(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed.starts_with("ses_") {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+/// Resolve the persisted external OpenCode session ID for an issue.
+///
+/// Returns `Ok(None)` when there is no session record, or when the stored value
+/// is a derived/legacy placeholder (for example `ses_*`) or empty.
+pub async fn get_issue_external_opencode_session_id(
+    pool: &DbPool,
+    repo_full_name: &str,
+    issue_id: i64,
+) -> Result<Option<String>> {
+    let row = sqlx::query(
+        r#"
+        SELECT opencode_session_id
+        FROM sessions
+        WHERE repo_full_name = ?1 AND issue_id = ?2
+        "#,
+    )
+    .bind(repo_full_name)
+    .bind(issue_id)
+    .fetch_optional(pool)
+    .await
+    .with_context(|| {
+        format!(
+            "Failed to get external opencode session ID for {}#{}",
+            repo_full_name, issue_id
+        )
+    })?;
+
+    Ok(row.and_then(|row| {
+        let value: String = row.get("opencode_session_id");
+        normalize_external_opencode_session_id(&value).map(ToString::to_string)
+    }))
+}
+
+/// Update an issue session mapping with a concrete external OpenCode session ID.
+pub async fn update_issue_external_opencode_session_id(
+    pool: &DbPool,
+    repo_full_name: &str,
+    issue_id: i64,
+    opencode_session_id: &str,
+) -> Result<()> {
+    let normalized = normalize_external_opencode_session_id(opencode_session_id).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Invalid external OpenCode session ID '{}': value cannot be empty or a derived placeholder",
+            opencode_session_id
+        )
+    })?;
+
+    let result = sqlx::query(
+        r#"
+        UPDATE sessions
+        SET opencode_session_id = ?1, updated_at = datetime('now')
+        WHERE repo_full_name = ?2 AND issue_id = ?3
+        "#,
+    )
+    .bind(normalized)
+    .bind(repo_full_name)
+    .bind(issue_id)
+    .execute(pool)
+    .await
+    .with_context(|| {
+        format!(
+            "Failed to update issue external opencode session ID: {}#{}",
+            repo_full_name, issue_id
+        )
+    })?;
+
+    if result.rows_affected() == 0 {
+        anyhow::bail!(
+            "Session not found for issue {}#{}",
+            repo_full_name,
+            issue_id
+        );
+    }
+
+    debug!(
+        repo = %repo_full_name,
+        issue_id = %issue_id,
+        opencode_session_id = %normalized,
+        "Updated issue external opencode session ID"
+    );
+
+    Ok(())
+}
+
 /// Update a session's opencode session ID
 pub async fn update_session_opencode_id(
     pool: &DbPool,
@@ -806,4 +899,147 @@ pub async fn update_session_mode(
         parsed_mode.as_str()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use super::*;
+
+    fn test_db_path(test_name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "forgebot-db-{}-{}-{}.db",
+            test_name,
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ))
+    }
+
+    fn cleanup_test_db(db_path: &Path) {
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    async fn insert_test_session(
+        pool: &DbPool,
+        repo_full_name: &str,
+        issue_id: i64,
+        opencode_session_id: &str,
+    ) {
+        insert_repo(
+            pool,
+            &uuid::Uuid::new_v4().to_string(),
+            repo_full_name,
+            "main",
+            "none",
+        )
+        .await
+        .expect("test repo insert should succeed");
+
+        let session = NewSession {
+            id: uuid::Uuid::new_v4().to_string(),
+            repo_full_name: repo_full_name.to_string(),
+            issue_id,
+            pr_id: None,
+            opencode_session_id: opencode_session_id.to_string(),
+            worktree_path: "/tmp/worktree".to_string(),
+            state: SessionState::Idle.as_str().to_string(),
+            mode: SessionMode::Collab.as_str().to_string(),
+        };
+
+        insert_session(pool, &session)
+            .await
+            .expect("test session insert should succeed");
+    }
+
+    #[tokio::test]
+    async fn test_get_issue_external_opencode_session_id_handles_legacy_and_empty_values() {
+        let db_path = test_db_path("legacy-empty");
+        let pool = init_db_at_path(&db_path)
+            .await
+            .expect("test db should initialize");
+
+        insert_test_session(&pool, "owner/repo-derived", 1, "ses_1_owner_repo").await;
+        insert_test_session(&pool, "owner/repo-empty", 2, "   ").await;
+        insert_test_session(&pool, "owner/repo-external", 3, "oc_123").await;
+
+        let derived = get_issue_external_opencode_session_id(&pool, "owner/repo-derived", 1)
+            .await
+            .expect("lookup should succeed");
+        assert_eq!(derived, None);
+
+        let empty = get_issue_external_opencode_session_id(&pool, "owner/repo-empty", 2)
+            .await
+            .expect("lookup should succeed");
+        assert_eq!(empty, None);
+
+        let external = get_issue_external_opencode_session_id(&pool, "owner/repo-external", 3)
+            .await
+            .expect("lookup should succeed");
+        assert_eq!(external, Some("oc_123".to_string()));
+
+        pool.close().await;
+        cleanup_test_db(&db_path);
+    }
+
+    #[tokio::test]
+    async fn test_update_issue_external_opencode_session_id_lifecycle() {
+        let db_path = test_db_path("mapping-lifecycle");
+        let pool = init_db_at_path(&db_path)
+            .await
+            .expect("test db should initialize");
+
+        insert_test_session(&pool, "owner/repo", 9, "ses_9_owner_repo").await;
+
+        let before = get_issue_external_opencode_session_id(&pool, "owner/repo", 9)
+            .await
+            .expect("lookup should succeed");
+        assert_eq!(before, None);
+
+        update_issue_external_opencode_session_id(&pool, "owner/repo", 9, "oc_999")
+            .await
+            .expect("mapping update should succeed");
+
+        let after = get_issue_external_opencode_session_id(&pool, "owner/repo", 9)
+            .await
+            .expect("lookup should succeed");
+        assert_eq!(after, Some("oc_999".to_string()));
+
+        let reused = get_issue_external_opencode_session_id(&pool, "owner/repo", 9)
+            .await
+            .expect("repeat lookup should succeed");
+        assert_eq!(reused, Some("oc_999".to_string()));
+
+        pool.close().await;
+        cleanup_test_db(&db_path);
+    }
+
+    #[tokio::test]
+    async fn test_update_issue_external_opencode_session_id_rejects_invalid_values() {
+        let db_path = test_db_path("reject-invalid");
+        let pool = init_db_at_path(&db_path)
+            .await
+            .expect("test db should initialize");
+
+        insert_test_session(&pool, "owner/repo", 11, "ses_11_owner_repo").await;
+
+        let empty_err = update_issue_external_opencode_session_id(&pool, "owner/repo", 11, "  ")
+            .await
+            .expect_err("empty value should be rejected");
+        assert!(empty_err.to_string().contains("cannot be empty"));
+
+        let derived_err =
+            update_issue_external_opencode_session_id(&pool, "owner/repo", 11, "ses_11_owner_repo")
+                .await
+                .expect_err("derived placeholder should be rejected");
+        assert!(derived_err.to_string().contains("derived placeholder"));
+
+        let still_unset = get_issue_external_opencode_session_id(&pool, "owner/repo", 11)
+            .await
+            .expect("lookup should succeed");
+        assert_eq!(still_unset, None);
+
+        pool.close().await;
+        cleanup_test_db(&db_path);
+    }
 }
