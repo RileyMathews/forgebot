@@ -101,6 +101,9 @@
             clippy
             rustfmt
 
+            # Python for local automation scripts
+            python3
+
             # SQLx CLI for running migrations
             sqlx-cli
 

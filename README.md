@@ -480,6 +480,14 @@ The runtime setup step copies host opencode auth from `${XDG_DATA_HOME:-$HOME/.l
 
 The local stack starts both `forgebot` and `opencode serve` so API transport smoke tests run with production-like routing.
 
+For a semi-automated manual-gated smoke test (issue -> plan -> proceed -> PR), run:
+
+```bash
+just e2e-smoke-manual
+```
+
+The script opens the issue in your browser and pauses for manual `y/n` confirmation at planning and PR checkpoints. It only performs cleanup if you confirm `y` at the final PR checkpoint.
+
 To clean all local test artifacts:
 
 ```bash
