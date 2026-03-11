@@ -1,7 +1,8 @@
 pub mod models;
 
 use anyhow::{Context, Result};
-use reqwest::Client;
+use reqwest::{Client, Method, RequestBuilder, StatusCode};
+use serde::de::DeserializeOwned;
 use tracing::{debug, error};
 
 use models::*;
@@ -50,20 +51,23 @@ impl ForgejoClient {
         format!("{}{}", self.base_url, path)
     }
 
-    /// GET an issue by ID
-    pub async fn get_issue(&self, repo: &str, issue_id: u64) -> Result<Issue> {
-        let url = self.api_url(&format!("/api/v1/repos/{}/issues/{}", repo, issue_id));
-        debug!("Fetching issue from: {}", url);
-
-        let response = self
-            .client
-            .get(&url)
+    fn request_builder(&self, method: Method, path: &str) -> RequestBuilder {
+        self.client
+            .request(method, self.api_url(path))
             .header("Authorization", self.auth_header())
-            .send()
-            .await
-            .with_context(|| {
-                format!("Failed to send request to get issue {}/{}", repo, issue_id)
-            })?;
+    }
+
+    async fn send_json<T>(
+        &self,
+        request: RequestBuilder,
+        send_context: impl FnOnce() -> String,
+        parse_context: impl FnOnce() -> String,
+        error_prefix: &str,
+    ) -> Result<T>
+    where
+        T: DeserializeOwned,
+    {
+        let response = request.send().await.with_context(send_context)?;
 
         let status = response.status();
         if !status.is_success() {
@@ -72,19 +76,60 @@ impl ForgejoClient {
                 .await
                 .unwrap_or_else(|_| "<could not read body>".to_string());
             anyhow::bail!(
-                "Failed to get issue: {} {} - {}",
+                "{}: {} {} - {}",
+                error_prefix,
                 status.as_u16(),
                 status.canonical_reason().unwrap_or("Unknown"),
                 body
             );
         }
 
-        let issue: Issue = response
-            .json()
-            .await
-            .with_context(|| format!("Failed to parse issue response for {}/{}", repo, issue_id))?;
+        response.json().await.with_context(parse_context)
+    }
 
-        Ok(issue)
+    async fn send_empty_ok(
+        &self,
+        request: RequestBuilder,
+        send_context: impl FnOnce() -> String,
+        ok_statuses: &[StatusCode],
+        error_prefix: &str,
+    ) -> Result<()> {
+        let response = request.send().await.with_context(send_context)?;
+        let status = response.status();
+
+        if ok_statuses.contains(&status) {
+            return Ok(());
+        }
+
+        if !status.is_success() {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<could not read body>".to_string());
+            anyhow::bail!(
+                "{}: {} {} - {}",
+                error_prefix,
+                status.as_u16(),
+                status.canonical_reason().unwrap_or("Unknown"),
+                body
+            );
+        }
+
+        Ok(())
+    }
+
+    /// GET an issue by ID
+    pub async fn get_issue(&self, repo: &str, issue_id: u64) -> Result<Issue> {
+        let path = format!("/api/v1/repos/{}/issues/{}", repo, issue_id);
+        debug!("Fetching issue from: {}", self.api_url(&path));
+
+        self.send_json(
+            self.request_builder(Method::GET, &path),
+            || format!("Failed to send request to get issue {}/{}", repo, issue_id),
+            || format!("Failed to parse issue response for {}/{}", repo, issue_id),
+            "Failed to get issue",
+        )
+        .await
     }
 
     /// List comments on an issue
@@ -93,47 +138,26 @@ impl ForgejoClient {
         repo: &str,
         issue_id: u64,
     ) -> Result<Vec<IssueComment>> {
-        let url = self.api_url(&format!(
-            "/api/v1/repos/{}/issues/{}/comments",
-            repo, issue_id
-        ));
-        debug!("Fetching issue comments from: {}", url);
+        let path = format!("/api/v1/repos/{}/issues/{}/comments", repo, issue_id);
+        debug!("Fetching issue comments from: {}", self.api_url(&path));
 
-        let response = self
-            .client
-            .get(&url)
-            .header("Authorization", self.auth_header())
-            .send()
-            .await
-            .with_context(|| {
+        self.send_json(
+            self.request_builder(Method::GET, &path),
+            || {
                 format!(
                     "Failed to send request to list issue comments {}/{}",
                     repo, issue_id
                 )
-            })?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "<could not read body>".to_string());
-            anyhow::bail!(
-                "Failed to list issue comments: {} {} - {}",
-                status.as_u16(),
-                status.canonical_reason().unwrap_or("Unknown"),
-                body
-            );
-        }
-
-        let comments: Vec<IssueComment> = response.json().await.with_context(|| {
-            format!(
-                "Failed to parse issue comments response for {}/{}",
-                repo, issue_id
-            )
-        })?;
-
-        Ok(comments)
+            },
+            || {
+                format!(
+                    "Failed to parse issue comments response for {}/{}",
+                    repo, issue_id
+                )
+            },
+            "Failed to list issue comments",
+        )
+        .await
     }
 
     /// List review comments on a pull request
@@ -142,44 +166,26 @@ impl ForgejoClient {
         repo: &str,
         pr_id: u64,
     ) -> Result<Vec<PullRequestReviewComment>> {
-        let url = self.api_url(&format!("/api/v1/repos/{}/pulls/{}/comments", repo, pr_id));
-        debug!("Fetching PR review comments from: {}", url);
+        let path = format!("/api/v1/repos/{}/pulls/{}/comments", repo, pr_id);
+        debug!("Fetching PR review comments from: {}", self.api_url(&path));
 
-        let response = self
-            .client
-            .get(&url)
-            .header("Authorization", self.auth_header())
-            .send()
-            .await
-            .with_context(|| {
+        self.send_json(
+            self.request_builder(Method::GET, &path),
+            || {
                 format!(
                     "Failed to send request to list PR review comments {}/{}",
                     repo, pr_id
                 )
-            })?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "<could not read body>".to_string());
-            anyhow::bail!(
-                "Failed to list PR review comments: {} {} - {}",
-                status.as_u16(),
-                status.canonical_reason().unwrap_or("Unknown"),
-                body
-            );
-        }
-
-        let comments: Vec<PullRequestReviewComment> = response.json().await.with_context(|| {
-            format!(
-                "Failed to parse PR review comments response for {}/{}",
-                repo, pr_id
-            )
-        })?;
-
-        Ok(comments)
+            },
+            || {
+                format!(
+                    "Failed to parse PR review comments response for {}/{}",
+                    repo, pr_id
+                )
+            },
+            "Failed to list PR review comments",
+        )
+        .await
     }
 
     /// Post a comment on an issue
@@ -189,52 +195,30 @@ impl ForgejoClient {
         issue_id: u64,
         body: &str,
     ) -> Result<IssueComment> {
-        let url = self.api_url(&format!(
-            "/api/v1/repos/{}/issues/{}/comments",
-            repo, issue_id
-        ));
-        debug!("Posting issue comment to: {}", url);
+        let path = format!("/api/v1/repos/{}/issues/{}/comments", repo, issue_id);
+        debug!("Posting issue comment to: {}", self.api_url(&path));
 
         let payload = CommentPayload {
             body: body.to_string(),
         };
 
-        let response = self
-            .client
-            .post(&url)
-            .header("Authorization", self.auth_header())
-            .json(&payload)
-            .send()
-            .await
-            .with_context(|| {
+        self.send_json(
+            self.request_builder(Method::POST, &path).json(&payload),
+            || {
                 format!(
                     "Failed to send request to post issue comment {}/{}",
                     repo, issue_id
                 )
-            })?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "<could not read body>".to_string());
-            anyhow::bail!(
-                "Failed to post issue comment: {} {} - {}",
-                status.as_u16(),
-                status.canonical_reason().unwrap_or("Unknown"),
-                body
-            );
-        }
-
-        let comment: IssueComment = response.json().await.with_context(|| {
-            format!(
-                "Failed to parse issue comment response for {}/{}",
-                repo, issue_id
-            )
-        })?;
-
-        Ok(comment)
+            },
+            || {
+                format!(
+                    "Failed to parse issue comment response for {}/{}",
+                    repo, issue_id
+                )
+            },
+            "Failed to post issue comment",
+        )
+        .await
     }
 
     /// Post a comment on a pull request (uses same endpoint as issue comments)
@@ -250,37 +234,16 @@ impl ForgejoClient {
 
     /// List webhooks for a repository
     pub async fn list_repo_webhooks(&self, repo: &str) -> Result<Vec<Webhook>> {
-        let url = self.api_url(&format!("/api/v1/repos/{}/hooks", repo));
-        debug!("Fetching webhooks from: {}", url);
+        let path = format!("/api/v1/repos/{}/hooks", repo);
+        debug!("Fetching webhooks from: {}", self.api_url(&path));
 
-        let response = self
-            .client
-            .get(&url)
-            .header("Authorization", self.auth_header())
-            .send()
-            .await
-            .with_context(|| format!("Failed to send request to list webhooks for {}", repo))?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "<could not read body>".to_string());
-            anyhow::bail!(
-                "Failed to list webhooks: {} {} - {}",
-                status.as_u16(),
-                status.canonical_reason().unwrap_or("Unknown"),
-                body
-            );
-        }
-
-        let webhooks: Vec<Webhook> = response
-            .json()
-            .await
-            .with_context(|| format!("Failed to parse webhooks response for {}", repo))?;
-
-        Ok(webhooks)
+        self.send_json(
+            self.request_builder(Method::GET, &path),
+            || format!("Failed to send request to list webhooks for {}", repo),
+            || format!("Failed to parse webhooks response for {}", repo),
+            "Failed to list webhooks",
+        )
+        .await
     }
 
     /// Create a webhook for a repository
@@ -290,8 +253,8 @@ impl ForgejoClient {
         url: &str,
         secret: &str,
     ) -> Result<Webhook> {
-        let api_url = self.api_url(&format!("/api/v1/repos/{}/hooks", repo));
-        debug!("Creating webhook at: {}", api_url);
+        let path = format!("/api/v1/repos/{}/hooks", repo);
+        debug!("Creating webhook at: {}", self.api_url(&path));
 
         let payload = WebhookPayload {
             hook_type: "gitea".to_string(),
@@ -308,80 +271,32 @@ impl ForgejoClient {
             active: true,
         };
 
-        let response = self
-            .client
-            .post(&api_url)
-            .header("Authorization", self.auth_header())
-            .json(&payload)
-            .send()
-            .await
-            .with_context(|| format!("Failed to send request to create webhook for {}", repo))?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "<could not read body>".to_string());
-            anyhow::bail!(
-                "Failed to create webhook: {} {} - {}",
-                status.as_u16(),
-                status.canonical_reason().unwrap_or("Unknown"),
-                body
-            );
-        }
-
-        let webhook: Webhook = response
-            .json()
-            .await
-            .with_context(|| format!("Failed to parse webhook creation response for {}", repo))?;
-
-        Ok(webhook)
+        self.send_json(
+            self.request_builder(Method::POST, &path).json(&payload),
+            || format!("Failed to send request to create webhook for {}", repo),
+            || format!("Failed to parse webhook creation response for {}", repo),
+            "Failed to create webhook",
+        )
+        .await
     }
 
     /// Delete a webhook for a repository
     pub async fn delete_repo_webhook(&self, repo: &str, hook_id: u64) -> Result<()> {
-        let api_url = self.api_url(&format!("/api/v1/repos/{}/hooks/{}", repo, hook_id));
-        debug!("Deleting webhook at: {}", api_url);
+        let path = format!("/api/v1/repos/{}/hooks/{}", repo, hook_id);
+        debug!("Deleting webhook at: {}", self.api_url(&path));
 
-        let response = self
-            .client
-            .delete(&api_url)
-            .header("Authorization", self.auth_header())
-            .send()
-            .await
-            .with_context(|| {
+        self.send_empty_ok(
+            self.request_builder(Method::DELETE, &path),
+            || {
                 format!(
                     "Failed to send request to delete webhook {} for {}",
                     hook_id, repo
                 )
-            })?;
-
-        let status = response.status();
-        if status == reqwest::StatusCode::NO_CONTENT {
-            // 204: Success, webhook deleted
-            return Ok(());
-        }
-
-        if status == reqwest::StatusCode::NOT_FOUND {
-            // 404: Webhook already deleted, treat as success
-            return Ok(());
-        }
-
-        if !status.is_success() {
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "<could not read body>".to_string());
-            anyhow::bail!(
-                "Failed to delete webhook: {} {} - {}",
-                status.as_u16(),
-                status.canonical_reason().unwrap_or("Unknown"),
-                body
-            );
-        }
-
-        Ok(())
+            },
+            &[StatusCode::NO_CONTENT, StatusCode::NOT_FOUND],
+            "Failed to delete webhook",
+        )
+        .await
     }
 
     /// Check if the token has permissions by attempting to list collaborators
