@@ -18,21 +18,21 @@ pub struct ForgejoClient {
 
 impl ForgejoClient {
     /// Create a new Forgejo client
-    pub fn new(base_url: &str, token: &str, bot_username: &str) -> Result<Self> {
+    pub fn new(base_url: &str, token: &str, bot_username: &str) -> Self {
         let client = Client::builder()
             .user_agent("forgebot")
             .build()
-            .context("Failed to build HTTP client")?;
+            .context("Failed to build HTTP client").expect("should be able to build forgejo client");
 
         // Ensure base_url doesn't have trailing slash
         let base_url = base_url.trim_end_matches('/').to_string();
 
-        Ok(Self {
+        Self {
             client,
             base_url,
             token: token.to_string(),
             bot_username: bot_username.to_string(),
-        })
+        }
     }
 
     /// Get authorization header value

@@ -5,22 +5,22 @@ use tracing::{Level, error, info, warn};
 use tracing_subscriber::FmtSubscriber;
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> () {
     // Initialize tracing subscriber
     let subscriber = FmtSubscriber::builder()
         .with_max_level(Level::INFO)
         .finish();
     tracing::subscriber::set_global_default(subscriber)
-        .context("Failed to set tracing subscriber")?;
+        .expect("Failed to set tracing subscriber");
 
     info!("forgebot starting");
 
     // Load configuration from environment variables
-    let config = config::Config::load().context("Failed to load configuration")?;
+    let config = config::Config::load().expect("Failed to load configuration");
 
     // Set up opencode config directory
     session::opencode::setup_opencode_config_dir(&config.opencode)
-        .context("Failed to set up opencode config directory")?;
+        .expect("Failed to set up opencode config directory");
 
     // Ensure worktree base directory exists
     tokio::fs::create_dir_all(&config.opencode.worktree_base)
@@ -50,16 +50,13 @@ async fn main() -> Result<()> {
     );
 
     let api_client = session::opencode_api::OpencodeApiClient::from_config(&config.opencode.api)
-        .context("Failed to initialize OpenCode API client")?;
+        .expect("Failed to initialize OpenCode API client");
     let health = api_client
         .health()
         .await
         .expect("Opencode API should be healthy");
     if !health.healthy {
-        anyhow::bail!(
-            "OpenCode API health check returned unhealthy status (version={})",
-            health.version
-        );
+        panic!("Opencode API check returned unealthy status");
     }
 
     info!(
@@ -69,15 +66,14 @@ async fn main() -> Result<()> {
 
     // Initialize database
     let db_pool = db::init_db(&config.database)
-        .await
-        .context("Failed to initialize database")?;
+        .await.expect("Database should be able to initialize");
 
     info!("Database initialized successfully");
 
     // Crash recovery: reset any repos stuck in 'cloning' state
     let stuck_clone_recovery = db::recover_stuck_clones_after_restart(&db_pool)
         .await
-        .context("failed to recover stuck clones")?;
+        .expect("failed to recover stuck clones");
 
     for full_name in stuck_clone_recovery.recovered_repos {
         info!(full_name = %full_name, "Reset stuck clone to failed state");
@@ -96,8 +92,7 @@ async fn main() -> Result<()> {
         &config.forgejo.url,
         &config.forgejo.token,
         &config.forgejo.bot_username,
-    )
-    .context("Failed to create Forgejo client")?;
+    );
 
     info!(
         base_url = %config.forgejo.url,
@@ -107,7 +102,7 @@ async fn main() -> Result<()> {
     let authenticated_user = forgejo_client
         .get_authenticated_user()
         .await
-        .context("Failed to resolve authenticated Forgejo user")?;
+        .expect("Failed to resolve authenticated Forgejo user");
 
     if authenticated_user.login != config.forgejo.bot_username {
         warn!(
@@ -162,7 +157,7 @@ async fn main() -> Result<()> {
 
     webhook::start_server(app_state)
         .await
-        .context("Webhook server failed")?;
+        .expect("Webhook server failed");
 
     // Server has shut down (normally this only happens on error)
     info!("Webhook server stopped gracefully");
@@ -170,5 +165,5 @@ async fn main() -> Result<()> {
     // Close the database pool gracefully
     db_pool.close().await;
 
-    Ok(())
+    ()
 }
