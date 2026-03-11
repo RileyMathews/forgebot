@@ -16,6 +16,7 @@ use crate::forgejo::models::{Issue, IssueComment, PullRequestReviewComment};
 use crate::session::env_loader;
 use crate::session::opencode_api::{
     CreateSessionRequest, OpencodeApiClient, PromptAsyncRequest, PromptModelInput, PromptPartInput,
+    SessionStatus,
 };
 use crate::session::worktree;
 use crate::session::{
@@ -732,6 +733,111 @@ async fn reject_if_session_busy(
     Ok(())
 }
 
+fn describe_session_status(status: &SessionStatus) -> String {
+    match status {
+        SessionStatus::Busy => "busy".to_string(),
+        SessionStatus::Retry {
+            attempt,
+            message,
+            next,
+        } => {
+            if message.is_empty() {
+                format!("retry (attempt {}, next in {}s)", attempt, next)
+            } else {
+                format!(
+                    "retry (attempt {}, next in {}s): {}",
+                    attempt, next, message
+                )
+            }
+        }
+        SessionStatus::Idle => "idle".to_string(),
+    }
+}
+
+fn blocking_api_session_status<'a>(
+    statuses: &'a HashMap<String, SessionStatus>,
+    preferred_session_id: Option<&'a str>,
+) -> Option<(&'a str, &'a SessionStatus)> {
+    if let Some(session_id) = preferred_session_id
+        && let Some(status) = statuses.get(session_id)
+        && matches!(status, SessionStatus::Busy | SessionStatus::Retry { .. })
+    {
+        return Some((session_id, status));
+    }
+
+    statuses.iter().find_map(|(session_id, status)| {
+        if matches!(status, SessionStatus::Busy | SessionStatus::Retry { .. }) {
+            Some((session_id.as_str(), status))
+        } else {
+            None
+        }
+    })
+}
+
+async fn reject_if_api_admission_blocked(
+    forgejo: &ForgejoClient,
+    config: &Config,
+    trigger: &SessionTrigger,
+    worktree_path: &Path,
+    preferred_session_id: Option<&str>,
+) -> Result<()> {
+    let api_client = OpencodeApiClient::from_config(&config.opencode.api)
+        .context("failed to initialize OpenCode API client for admission gate")?;
+    let statuses = api_client
+        .session_status(worktree_path)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to read OpenCode session statuses for {} issue {}",
+                trigger.repo_full_name, trigger.issue_id
+            )
+        })?;
+
+    if let Some((blocking_session_id, status)) =
+        blocking_api_session_status(&statuses, preferred_session_id)
+    {
+        let status_text = describe_session_status(status);
+        info!(
+            repo = %trigger.repo_full_name,
+            issue_id = %trigger.issue_id,
+            opencode_session_id = %blocking_session_id,
+            status = %status_text,
+            "OpenCode API admission rejected due to active session status"
+        );
+
+        if let Err(e) = forgejo
+            .post_issue_comment(
+                &trigger.repo_full_name,
+                trigger.issue_id,
+                &format!(
+                    "⚠️ forgebot cannot accept a new trigger right now because OpenCode session `{}` is {}. Please wait for the current run to finish and retry.",
+                    blocking_session_id,
+                    status_text,
+                ),
+            )
+            .await
+        {
+            warn!(
+                repo = %trigger.repo_full_name,
+                issue_id = %trigger.issue_id,
+                opencode_session_id = %blocking_session_id,
+                err = %e,
+                "Failed to post OpenCode status rejection comment"
+            );
+        }
+
+        bail!(
+            "OpenCode API admission blocked for {} issue {}: session {} is {}",
+            trigger.repo_full_name,
+            trigger.issue_id,
+            blocking_session_id,
+            status_text,
+        );
+    }
+
+    Ok(())
+}
+
 async fn lookup_repo_record(db: &DbPool, trigger: &SessionTrigger) -> Result<crate::db::Repo> {
     crate::db::get_repo_by_full_name(db, &trigger.repo_full_name)
         .await?
@@ -1184,9 +1290,11 @@ pub async fn dispatch_session(
     // 1. Fetch issue context from Forgejo
     let issue_context = fetch_issue_context(forgejo, &trigger).await?;
 
-    // 2. Check if session already exists and reject if busy
+    // 2. Check if session already exists and reject if busy for CLI mode
     let existing_session = load_existing_session(db, &trigger).await?;
-    reject_if_session_busy(forgejo, &trigger, &session_id, &existing_session).await?;
+    if config.opencode.transport == OpencodeTransport::Cli {
+        reject_if_session_busy(forgejo, &trigger, &session_id, &existing_session).await?;
+    }
 
     // 3. Build prompt
     let prompt = build_prompt(
@@ -1202,7 +1310,31 @@ pub async fn dispatch_session(
     let worktree_path =
         ensure_session_worktree(config, &trigger, &repo_record.default_branch).await?;
 
-    // 5. Load environment in the worktree using the repository's configured loader.
+    // 5. In API mode, reject triggers while OpenCode reports busy/retry.
+    if config.opencode.transport == OpencodeTransport::Api {
+        let preferred_session_id = get_issue_external_opencode_session_id(
+            db,
+            &trigger.repo_full_name,
+            trigger.issue_id as i64,
+        )
+        .await?
+        .or_else(|| {
+            existing_session
+                .as_ref()
+                .and_then(external_session_id)
+                .map(str::to_string)
+        });
+        reject_if_api_admission_blocked(
+            forgejo,
+            config,
+            &trigger,
+            &worktree_path,
+            preferred_session_id.as_deref(),
+        )
+        .await?;
+    }
+
+    // 6. Load environment in the worktree using the repository's configured loader.
     let env_extras = load_env_or_fail(
         db,
         forgejo,
@@ -1214,23 +1346,23 @@ pub async fn dispatch_session(
     )
     .await?;
 
-    // 6. Get or create session record
+    // 7. Get or create session record
     let session_record =
         get_or_create_session(db, &trigger, &session_id, &worktree_path, existing_session).await?;
 
-    // 7. Post acknowledgement comment
+    // 8. Post acknowledgement comment
     post_acknowledgement(forgejo, &trigger, &session_id).await;
 
-    // 8. Update session state
+    // 9. Update session state
     update_session_state(db, &session_record.id, new_state).await?;
 
-    // 9. Determine agent mode
+    // 10. Determine agent mode
     let agent_mode = trigger.action.agent_mode();
 
-    // 10. Set FORGEBOT_* env vars for this session
+    // 11. Set FORGEBOT_* env vars for this session
     let session_env = build_session_env(&trigger, &env_extras);
 
-    // 11. Spawn opencode
+    // 12. Spawn opencode
     let external_session_id = external_session_id(&session_record);
 
     info!(
@@ -1272,7 +1404,7 @@ pub async fn dispatch_session(
         ),
     };
 
-    // 12. Handle result
+    // 13. Handle result
     match opencode_result {
         Ok(captured_session_id) => {
             handle_dispatch_success(
@@ -1517,5 +1649,49 @@ mod tests {
         assert!(parse_model_input("invalid").is_none());
         assert!(parse_model_input("provider/").is_none());
         assert!(parse_model_input("/model").is_none());
+    }
+
+    #[test]
+    fn test_blocking_api_session_status_prefers_targeted_session() {
+        let mut statuses = HashMap::new();
+        statuses.insert("other".to_string(), SessionStatus::Busy);
+        statuses.insert(
+            "target".to_string(),
+            SessionStatus::Retry {
+                attempt: 2,
+                message: "still running".to_string(),
+                next: 5,
+            },
+        );
+
+        let (session_id, status) = blocking_api_session_status(&statuses, Some("target"))
+            .expect("target session should block");
+        assert_eq!(session_id, "target");
+        assert!(matches!(status, SessionStatus::Retry { .. }));
+    }
+
+    #[test]
+    fn test_blocking_api_session_status_falls_back_to_any_busy() {
+        let mut statuses = HashMap::new();
+        statuses.insert("one".to_string(), SessionStatus::Idle);
+        statuses.insert("two".to_string(), SessionStatus::Busy);
+
+        let (session_id, status) = blocking_api_session_status(&statuses, Some("missing"))
+            .expect("busy session should block even without preferred session");
+        assert_eq!(session_id, "two");
+        assert!(matches!(status, SessionStatus::Busy));
+    }
+
+    #[test]
+    fn test_describe_session_status_retry_message() {
+        let status = SessionStatus::Retry {
+            attempt: 4,
+            message: "waiting on tool".to_string(),
+            next: 8,
+        };
+        assert_eq!(
+            describe_session_status(&status),
+            "retry (attempt 4, next in 8s): waiting on tool"
+        );
     }
 }
