@@ -69,6 +69,7 @@ async fn test_delete_repo_final_step_succeeds() {
         opencode_session_id: "opencode-1".to_string(),
         worktree_path: "/tmp/worktree".to_string(),
         state: "idle".to_string(),
+        mode: "collab".to_string(),
     };
 
     insert_session(&pool, &session)
@@ -141,6 +142,7 @@ async fn test_session_retrieval_before_cleanup() {
             opencode_session_id: format!("opencode-{}", i),
             worktree_path: format!("/tmp/worktree-{}", i),
             state: "idle".to_string(),
+            mode: "collab".to_string(),
         };
 
         insert_session(&pool, &session)
@@ -193,6 +195,7 @@ async fn test_worktree_paths_extracted_correctly() {
             opencode_session_id: format!("opencode-{}", i),
             worktree_path: path.to_string(),
             state: "idle".to_string(),
+            mode: "collab".to_string(),
         };
 
         insert_session(&pool, &session)
@@ -237,6 +240,7 @@ async fn test_cleanup_has_all_session_info() {
         opencode_session_id: "opencode-xyz".to_string(),
         worktree_path: "/tmp/worktree".to_string(),
         state: "idle".to_string(),
+        mode: "collab".to_string(),
     };
 
     insert_session(&pool, &session)
@@ -315,6 +319,7 @@ async fn test_cleanup_multiple_sessions_all_deleted() {
             opencode_session_id: format!("opencode-{}", i),
             worktree_path: format!("/tmp/worktree-{}", i),
             state: if i % 3 == 0 { "idle" } else { "error" }.to_string(),
+            mode: "collab".to_string(),
         };
 
         insert_session(&pool, &session)
@@ -370,6 +375,7 @@ async fn test_cleanup_preserves_other_repos() {
                 opencode_session_id: format!("opencode-{}-{}", i, j),
                 worktree_path: format!("/tmp/worktree-{}-{}", i, j),
                 state: "idle".to_string(),
+                mode: "collab".to_string(),
             };
 
             insert_session(&pool, &session)
@@ -429,6 +435,7 @@ async fn test_cleanup_handles_all_session_states() {
             opencode_session_id: format!("opencode-{}", i),
             worktree_path: format!("/tmp/worktree-{}", i),
             state: state.to_string(),
+            mode: "collab".to_string(),
         };
 
         insert_session(&pool, &session)
@@ -480,6 +487,7 @@ async fn test_cleanup_handles_sessions_with_pr_ids() {
             opencode_session_id: format!("opencode-{}", i),
             worktree_path: format!("/tmp/worktree-{}", i),
             state: "idle".to_string(),
+            mode: "collab".to_string(),
         };
 
         insert_session(&pool, &session)
@@ -534,6 +542,7 @@ async fn test_cleanup_uses_full_name_not_id() {
             opencode_session_id: format!("opencode-{}", idx),
             worktree_path: format!("/tmp/worktree-{}", idx),
             state: "idle".to_string(),
+            mode: "collab".to_string(),
         };
 
         insert_session(&pool, &session)

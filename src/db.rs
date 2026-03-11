@@ -6,7 +6,7 @@ use std::path::Path;
 use tracing::{debug, info};
 
 use crate::config::DatabaseConfig;
-use crate::session::{CloneStatus, SessionState};
+use crate::session::{CloneStatus, SessionMode, SessionState};
 
 /// Type alias for SQLite connection pool
 pub type DbPool = Pool<Sqlite>;
@@ -36,6 +36,7 @@ pub struct Session {
     pub opencode_session_id: String,
     pub worktree_path: String,
     pub state: SessionState,
+    pub mode: SessionMode,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -50,6 +51,7 @@ pub struct NewSession {
     pub opencode_session_id: String,
     pub worktree_path: String,
     pub state: String,
+    pub mode: String,
 }
 
 /// Pending worktree record
@@ -81,6 +83,7 @@ fn map_repo_row(row: &SqliteRow) -> Result<Repo> {
 
 fn map_session_row(row: &SqliteRow) -> Result<Session> {
     let state = row.get::<String, _>("state").parse::<SessionState>()?;
+    let mode = row.get::<String, _>("mode").parse::<SessionMode>()?;
 
     Ok(Session {
         id: row.get("id"),
@@ -90,6 +93,7 @@ fn map_session_row(row: &SqliteRow) -> Result<Session> {
         opencode_session_id: row.get("opencode_session_id"),
         worktree_path: row.get("worktree_path"),
         state,
+        mode,
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     })
@@ -418,7 +422,7 @@ pub async fn get_sessions_for_repo(pool: &DbPool, full_name: &str) -> Result<Vec
     let rows = sqlx::query(
         r#"
         SELECT id, repo_full_name, issue_id, pr_id, opencode_session_id,
-               worktree_path, state, created_at, updated_at
+               worktree_path, state, mode, created_at, updated_at
         FROM sessions
         WHERE repo_full_name = ?1
         "#,
@@ -445,8 +449,8 @@ pub async fn get_sessions_for_repo(pool: &DbPool, full_name: &str) -> Result<Vec
 pub async fn insert_session(pool: &DbPool, session: &NewSession) -> Result<()> {
     sqlx::query(
         r#"
-        INSERT INTO sessions (id, repo_full_name, issue_id, pr_id, opencode_session_id, worktree_path, state)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        INSERT INTO sessions (id, repo_full_name, issue_id, pr_id, opencode_session_id, worktree_path, state, mode)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
         "#,
     )
     .bind(&session.id)
@@ -456,6 +460,7 @@ pub async fn insert_session(pool: &DbPool, session: &NewSession) -> Result<()> {
     .bind(&session.opencode_session_id)
     .bind(&session.worktree_path)
     .bind(&session.state)
+    .bind(&session.mode)
     .execute(pool)
     .await
     .with_context(|| format!("Failed to insert session: {}", session.id))?;
@@ -476,7 +481,7 @@ pub async fn get_session_by_issue(
     let row = sqlx::query(
         r#"
         SELECT id, repo_full_name, issue_id, pr_id, opencode_session_id,
-               worktree_path, state, created_at, updated_at
+               worktree_path, state, mode, created_at, updated_at
         FROM sessions
         WHERE repo_full_name = ?1 AND issue_id = ?2
         "#,
@@ -507,7 +512,7 @@ pub async fn get_session_by_pr(pool: &DbPool, pr_id: i64) -> Result<Option<Sessi
     let row = sqlx::query(
         r#"
         SELECT id, repo_full_name, issue_id, pr_id, opencode_session_id,
-               worktree_path, state, created_at, updated_at
+               worktree_path, state, mode, created_at, updated_at
         FROM sessions
         WHERE pr_id = ?1
         "#,
@@ -592,7 +597,7 @@ pub async fn get_sessions_in_state(pool: &DbPool, states: &[SessionState]) -> Re
     let query_str = format!(
         r#"
         SELECT id, repo_full_name, issue_id, pr_id, opencode_session_id,
-               worktree_path, state, created_at, updated_at
+               worktree_path, state, mode, created_at, updated_at
         FROM sessions
         WHERE state IN ({})
         ORDER BY created_at DESC
@@ -720,6 +725,42 @@ pub async fn update_session_opencode_id(
     debug!(
         "Updated session opencode ID: {} -> {}",
         session_id, opencode_session_id
+    );
+    Ok(())
+}
+
+/// Update a session's mode
+pub async fn update_session_mode(
+    pool: &DbPool,
+    session_id: &str,
+    mode: impl ToString,
+) -> Result<()> {
+    let mode = mode.to_string();
+    let parsed_mode = mode
+        .parse::<SessionMode>()
+        .with_context(|| format!("Invalid session mode '{}': expected known mode", mode))?;
+
+    let result = sqlx::query(
+        r#"
+        UPDATE sessions
+        SET mode = ?1, updated_at = datetime('now')
+        WHERE id = ?2
+        "#,
+    )
+    .bind(parsed_mode.as_str())
+    .bind(session_id)
+    .execute(pool)
+    .await
+    .with_context(|| format!("Failed to update session mode: {}", session_id))?;
+
+    if result.rows_affected() == 0 {
+        anyhow::bail!("Session not found: {}", session_id);
+    }
+
+    debug!(
+        "Updated session mode: {} -> {}",
+        session_id,
+        parsed_mode.as_str()
     );
     Ok(())
 }

@@ -4,14 +4,15 @@ use tracing::{error, info, warn};
 use crate::config::Config;
 use crate::db::{
     DbPool, NewSession, add_pending_worktree, get_repo_by_full_name, get_session_by_issue,
-    get_session_by_pr, insert_session, update_session_pr_id,
+    get_session_by_pr, insert_session, update_session_mode, update_session_pr_id,
 };
 use crate::forgejo::ForgejoClient;
 use crate::session::opencode::dispatch_session;
 use crate::session::worktree::{bare_clone_path, remove_worktree, worktree_path};
 use crate::session::{
-    SessionAction, SessionState, SessionTrigger, comment_text_busy, comment_text_error,
-    comment_text_no_context, comment_text_thinking, comment_text_working, derive_session_id,
+    SessionAction, SessionMode, SessionState, SessionTrigger, comment_text_busy,
+    comment_text_error, comment_text_no_context, comment_text_thinking, comment_text_working,
+    derive_session_id,
 };
 
 use super::models::*;
@@ -117,9 +118,9 @@ pub async fn handle_issue_comment(
         return Ok(ok_response("OK - no @forgebot trigger"));
     }
 
-    // 4. Parse action from trigger
-    let action = parse_action_from_comment(&payload.comment.body);
-    info!("Parsed action '{}' from comment", action.as_str());
+    // 4. Parse trigger flags from comment
+    let build_requested = parse_build_requested_from_comment(&payload.comment.body);
+    info!(build_requested, "Parsed trigger flags from comment");
 
     // 5. Look up or create session row
     let issue_id = payload.issue.number as i64;
@@ -191,7 +192,7 @@ pub async fn handle_issue_comment(
             }
         };
 
-    let _session_record = if let Some(session) = existing_session {
+    let mut session_record = if let Some(session) = existing_session {
         session
     } else {
         // Create new session
@@ -208,6 +209,7 @@ pub async fn handle_issue_comment(
             opencode_session_id: session_id.clone(),
             worktree_path: worktree_path.display().to_string(),
             state: SessionState::Idle.as_str().to_string(),
+            mode: SessionMode::Collab.as_str().to_string(),
         };
 
         if let Err(e) = insert_session(db, &new_session).await {
@@ -252,7 +254,37 @@ pub async fn handle_issue_comment(
         }
     };
 
-    // 7. Post acknowledgement comment
+    // 7. Persist mode switch to build when requested.
+    if build_requested && session_record.mode != SessionMode::Build {
+        if let Err(e) =
+            update_session_mode(db, &session_record.id, SessionMode::Build.as_str()).await
+        {
+            error!(
+                repo = %payload.repository.full_name,
+                issue_id = %payload.issue.number,
+                session_id = %session_record.id,
+                err = %e,
+                "Failed to update session mode"
+            );
+            let err_msg =
+                comment_text_error(&format!("Failed to switch session to build mode: {}", e));
+            post_issue_comment_non_blocking(
+                forgejo,
+                &payload.repository.full_name,
+                payload.issue.number,
+                &err_msg,
+                "session mode update error",
+            )
+            .await;
+            return Ok(ok_response("OK - error logged"));
+        }
+        session_record.mode = SessionMode::Build;
+    }
+
+    let action = session_record.mode.action();
+    info!(mode = %session_record.mode.as_str(), action = %action.as_str(), "Selected session mode and action");
+
+    // 8. Post acknowledgement comment
     let ack_msg = match action {
         SessionAction::Plan => comment_text_thinking(),
         SessionAction::Build | SessionAction::Revision => comment_text_working(),
@@ -267,7 +299,7 @@ pub async fn handle_issue_comment(
     )
     .await;
 
-    // 8. Create SessionTrigger and dispatch in background task
+    // 9. Create SessionTrigger and dispatch in background task
     let trigger = SessionTrigger {
         repo_full_name: payload.repository.full_name.clone(),
         issue_id: payload.issue.number,
@@ -289,16 +321,19 @@ pub async fn handle_issue_comment(
         }
     });
 
-    // 9. Return 200 immediately (non-blocking)
+    // 10. Return 200 immediately (non-blocking)
     Ok(ok_response("OK - dispatching session"))
 }
 
-/// Parse action keyword from comment body
-/// - "plan" = plan mode
-/// - "build" = build mode
-/// - anything else = use current session state (default to plan)
-fn parse_action_from_comment(body: &str) -> SessionAction {
+/// Parse build trigger from comment body.
+/// - "--build" anywhere in the comment switches to build mode
+/// - "@forgebot build" is accepted for backwards compatibility
+fn parse_build_requested_from_comment(body: &str) -> bool {
     let body_lower = body.to_lowercase();
+
+    if body_lower.contains("--build") {
+        return true;
+    }
 
     // Look for @forgebot followed by action keyword
     if let Some(idx) = body_lower.find("@forgebot") {
@@ -306,17 +341,12 @@ fn parse_action_from_comment(body: &str) -> SessionAction {
         let words: Vec<&str> = after_trigger.split_whitespace().collect();
 
         // Check second word (first word is @forgebot)
-        if words.len() > 1 {
-            match words[1] {
-                "plan" => return SessionAction::Plan,
-                "build" => return SessionAction::Build,
-                _ => {}
-            }
+        if words.len() > 1 && words[1] == "build" {
+            return true;
         }
     }
 
-    // Default to plan if no explicit action found
-    SessionAction::Plan
+    false
 }
 
 /// Handle pull_request webhook events (opened, closed, merged)
@@ -622,41 +652,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_action_from_comment() {
-        // Plan action
-        assert_eq!(
-            parse_action_from_comment("@forgebot plan"),
-            SessionAction::Plan
-        );
-        assert_eq!(
-            parse_action_from_comment("Hey @forgebot plan this issue"),
-            SessionAction::Plan
-        );
-        assert_eq!(
-            parse_action_from_comment("@FORGEBOT PLAN"),
-            SessionAction::Plan
-        ); // case insensitive
+    fn test_parse_build_requested_from_comment() {
+        assert!(parse_build_requested_from_comment("@forgebot --build"));
+        assert!(parse_build_requested_from_comment(
+            "Hey @forgebot can you do this --build please"
+        ));
+        assert!(parse_build_requested_from_comment("@forgebot build"));
+        assert!(parse_build_requested_from_comment("@FORGEBOT BUILD"));
 
-        // Build action
-        assert_eq!(
-            parse_action_from_comment("@forgebot build"),
-            SessionAction::Build
-        );
-        assert_eq!(
-            parse_action_from_comment("Please @forgebot build this"),
-            SessionAction::Build
-        );
-
-        // Unknown action defaults to plan
-        assert_eq!(
-            parse_action_from_comment("@forgebot something"),
-            SessionAction::Plan
-        );
-        assert_eq!(parse_action_from_comment("@forgebot"), SessionAction::Plan);
-        assert_eq!(
-            parse_action_from_comment("just a comment"),
-            SessionAction::Plan
-        );
+        assert!(!parse_build_requested_from_comment("@forgebot"));
+        assert!(!parse_build_requested_from_comment("@forgebot plan"));
+        assert!(!parse_build_requested_from_comment("just a comment"));
     }
 
     #[test]

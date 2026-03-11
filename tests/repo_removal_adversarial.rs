@@ -64,6 +64,7 @@ async fn insert_test_session(
         opencode_session_id: format!("opencode-{}", issue_id),
         worktree_path: worktree_path.to_string(),
         state: state.to_string(),
+        mode: "collab".to_string(),
     };
 
     insert_session(pool, &session).await?;
@@ -450,6 +451,7 @@ async fn test_update_session_state_to_all_valid_states() {
             opencode_session_id: format!("opencode-{}", i),
             worktree_path: "/tmp/worktree".to_string(),
             state: "planning".to_string(),
+            mode: "collab".to_string(),
         };
 
         insert_session(&pool, &session)
@@ -718,6 +720,7 @@ async fn test_repo_deletion_with_pr_id_sessions() {
         opencode_session_id: "opencode-session-1".to_string(),
         worktree_path: "/tmp/worktree".to_string(),
         state: "idle".to_string(),
+        mode: "collab".to_string(),
     };
 
     insert_session(&pool, &session)

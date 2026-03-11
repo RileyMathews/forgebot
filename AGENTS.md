@@ -95,11 +95,11 @@ sqlite3 "$HOME/.local/state/forgebot-local-dev/forgebot.db" \
 curl -si -X POST http://127.0.0.1:8765/ui/repo/riley/terminal-config/webhook
 ```
 
-4. Create an issue in Forgejo and trigger planning/build with issue comment. Use the forgejo MCP to create the issue and comment. The comment must contain @forgebot plan
+4. Create an issue in Forgejo and trigger a collaborative session with an issue comment. Use the forgejo MCP to create the issue and comment. The comment must contain `@forgebot`.
 
 5. Verify the session reaches idle and the bot responds with a plan on the issue. Again use the MCP for this.
 
-6. Tell the bot to implement the plan with another comment saying '@forgebot build'.
+6. Tell the bot to switch to PR/build mode with another comment containing `@forgebot --build`.
 
 7. Verify the session reaches `idle` and a PR is created. Use the MCP to fetch PRs and confirm via the body that its linked in some way to the issue created.
 
