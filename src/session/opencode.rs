@@ -6,7 +6,7 @@
 //! 3. Session orchestration and lifecycle management
 //! 4. Crash recovery on startup
 
-use crate::config::{Config, OpencodeConfig};
+use crate::config::{Config, OpencodeConfig, OpencodeTransport};
 use crate::db::{
     DbPool, NewSession, Session, get_issue_external_opencode_session_id, get_sessions_in_state,
     insert_session, update_issue_external_opencode_session_id, update_session_state,
@@ -14,6 +14,9 @@ use crate::db::{
 use crate::forgejo::ForgejoClient;
 use crate::forgejo::models::{Issue, IssueComment, PullRequestReviewComment};
 use crate::session::env_loader;
+use crate::session::opencode_api::{
+    CreateSessionRequest, OpencodeApiClient, PromptAsyncRequest, PromptModelInput, PromptPartInput,
+};
 use crate::session::worktree;
 use crate::session::{
     SESSION_BUSY_STATES, SessionAction, SessionState, SessionTrigger, build_prompt,
@@ -866,10 +869,11 @@ async fn handle_dispatch_success(
     forgejo: &ForgejoClient,
     config: &Config,
     trigger: &SessionTrigger,
-    session_id: &str,
     session_record: &Session,
     captured_session_id: Option<String>,
+    completion_confirmed: bool,
 ) -> Result<()> {
+    let session_id = derive_session_id(&trigger.repo_full_name, trigger.issue_id);
     info!(
         session_id = %session_id,
         exit_code = 0,
@@ -909,7 +913,7 @@ async fn handle_dispatch_success(
             db,
             forgejo,
             trigger,
-            session_id,
+            &session_id,
             session_record,
             continuity_err,
         )
@@ -976,12 +980,16 @@ async fn handle_dispatch_success(
 
     update_session_state(db, &session_record.id, SessionState::Idle).await?;
 
-    let success_msg = match trigger.action {
-        SessionAction::Plan => {
-            "✅ Collaboration update posted. Add the build flag in a comment when you're ready for implementation and PR creation."
+    let success_msg = if completion_confirmed {
+        match trigger.action {
+            SessionAction::Plan => {
+                "✅ Collaboration update posted. Add the build flag in a comment when you're ready for implementation and PR creation."
+            }
+            SessionAction::Build => "✅ Implementation complete! A pull request has been created.",
+            SessionAction::Revision => "✅ Review comments addressed and changes pushed.",
         }
-        SessionAction::Build => "✅ Implementation complete! A pull request has been created.",
-        SessionAction::Revision => "✅ Review comments addressed and changes pushed.",
+    } else {
+        "✅ Request dispatched to OpenCode API. Work continues asynchronously in this session."
     };
     if let Err(e) = forgejo
         .post_issue_comment(&trigger.repo_full_name, trigger.issue_id, success_msg)
@@ -997,6 +1005,113 @@ async fn handle_dispatch_success(
     }
 
     Ok(())
+}
+
+fn parse_model_input(model: &str) -> Option<PromptModelInput> {
+    let mut parts = model.splitn(2, '/');
+    let provider_id = parts.next()?.trim();
+    let model_id = parts.next()?.trim();
+
+    if provider_id.is_empty() || model_id.is_empty() {
+        return None;
+    }
+
+    Some(PromptModelInput {
+        provider_id: provider_id.to_string(),
+        model_id: model_id.to_string(),
+    })
+}
+
+async fn run_opencode_api(
+    config: &Config,
+    trigger: &SessionTrigger,
+    derived_session_id: &str,
+    external_opencode_session_id: Option<&str>,
+    worktree_path: &Path,
+    prompt: &str,
+) -> Result<String> {
+    let api_client = OpencodeApiClient::from_config(&config.opencode.api)
+        .context("failed to initialize OpenCode API client")?;
+
+    let mut session_id = external_opencode_session_id.map(str::to_string);
+
+    if let Some(existing_id) = external_opencode_session_id {
+        match api_client.get_session(worktree_path, existing_id).await {
+            Ok(_) => {
+                info!(
+                    repo = %trigger.repo_full_name,
+                    issue_id = %trigger.issue_id,
+                    opencode_session_id = %existing_id,
+                    "Reusing existing OpenCode API session"
+                );
+            }
+            Err(e) => {
+                warn!(
+                    repo = %trigger.repo_full_name,
+                    issue_id = %trigger.issue_id,
+                    opencode_session_id = %existing_id,
+                    err = %e,
+                    "Existing OpenCode API session not available; creating a new session"
+                );
+                session_id = None;
+            }
+        }
+    }
+
+    if session_id.is_none() {
+        let created = api_client
+            .create_session(
+                worktree_path,
+                &CreateSessionRequest {
+                    parent_id: None,
+                    title: derived_session_id.to_string(),
+                },
+            )
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to create OpenCode API session for {} issue {}",
+                    trigger.repo_full_name, trigger.issue_id
+                )
+            })?;
+        session_id = Some(created.id);
+    }
+
+    let session_id = session_id.ok_or_else(|| {
+        anyhow!(
+            "failed to resolve OpenCode API session for {} issue {}",
+            trigger.repo_full_name,
+            trigger.issue_id
+        )
+    })?;
+
+    if parse_model_input(&config.opencode.model).is_none() {
+        warn!(
+            model = %config.opencode.model,
+            "FORGEBOT_OPENCODE_MODEL missing provider/model format; API dispatch will use server default model"
+        );
+    }
+
+    let prompt_request = PromptAsyncRequest {
+        agent: Some(trigger.action.agent_mode().to_string()),
+        model: parse_model_input(&config.opencode.model),
+        no_reply: None,
+        parts: vec![PromptPartInput::Text {
+            text: prompt.to_string(),
+        }],
+    };
+
+    api_client
+        .prompt_async(worktree_path, &session_id, &prompt_request)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to dispatch OpenCode API prompt_async for {} issue {}",
+                trigger.repo_full_name, trigger.issue_id
+            )
+        })?;
+
+    Ok(session_id)
 }
 
 async fn handle_dispatch_failure(
@@ -1126,18 +1241,36 @@ pub async fn dispatch_session(
         "Spawning opencode"
     );
 
-    let opencode_result = run_opencode(RunOpencodeParams {
-        config,
-        repo_full_name: &trigger.repo_full_name,
-        derived_session_id: &session_id,
-        external_opencode_session_id: external_session_id,
-        agent_mode,
-        model: &config.opencode.model,
-        worktree_path: &worktree_path,
-        prompt: &prompt,
-        env_extras: session_env,
-    })
-    .await;
+    let (opencode_result, completion_confirmed) = match config.opencode.transport {
+        OpencodeTransport::Cli => (
+            run_opencode(RunOpencodeParams {
+                config,
+                repo_full_name: &trigger.repo_full_name,
+                derived_session_id: &session_id,
+                external_opencode_session_id: external_session_id,
+                agent_mode,
+                model: &config.opencode.model,
+                worktree_path: &worktree_path,
+                prompt: &prompt,
+                env_extras: session_env,
+            })
+            .await,
+            true,
+        ),
+        OpencodeTransport::Api => (
+            run_opencode_api(
+                config,
+                &trigger,
+                &session_id,
+                external_session_id,
+                &worktree_path,
+                &prompt,
+            )
+            .await
+            .map(Some),
+            false,
+        ),
+    };
 
     // 12. Handle result
     match opencode_result {
@@ -1147,9 +1280,9 @@ pub async fn dispatch_session(
                 forgejo,
                 config,
                 &trigger,
-                &session_id,
                 &session_record,
                 captured_session_id,
+                completion_confirmed,
             )
             .await
         }
@@ -1373,5 +1506,16 @@ mod tests {
             ..derived
         };
         assert_eq!(external_session_id(&external), Some("oc_123"));
+    }
+
+    #[test]
+    fn test_parse_model_input() {
+        let parsed = parse_model_input("opencode/kimi-k2.5").expect("model should parse");
+        assert_eq!(parsed.provider_id, "opencode");
+        assert_eq!(parsed.model_id, "kimi-k2.5");
+
+        assert!(parse_model_input("invalid").is_none());
+        assert!(parse_model_input("provider/").is_none());
+        assert!(parse_model_input("/model").is_none());
     }
 }
