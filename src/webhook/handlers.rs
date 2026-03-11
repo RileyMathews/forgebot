@@ -3,7 +3,7 @@ use tracing::{error, info, warn};
 
 use crate::config::Config;
 use crate::db::{
-    DbPool, NewSession, add_pending_worktree, get_repo_by_full_name, get_session_by_issue,
+    DbPool, NewSession, Session, add_pending_worktree, get_repo_by_full_name, get_session_by_issue,
     get_session_by_pr, insert_session, update_session_mode, update_session_pr_id,
 };
 use crate::forgejo::ForgejoClient;
@@ -66,6 +66,220 @@ async fn post_pr_comment_non_blocking(
     }
 }
 
+enum IssueCommentSessionResult {
+    Ready(Session),
+    Busy,
+    ErrorLogged,
+    CreationError,
+}
+
+async fn validate_watched_repo(db: &DbPool, repo_full_name: &str) -> Option<Response> {
+    match get_repo_by_full_name(db, repo_full_name).await {
+        Ok(Some(_repo)) => None,
+        Ok(None) => {
+            info!(
+                "Repository '{}' not watched, ignoring comment",
+                repo_full_name
+            );
+            Some(ok_response("OK - repo not watched"))
+        }
+        Err(e) => {
+            error!(
+                repo = %repo_full_name,
+                err = %e,
+                "Failed to check repo watch state"
+            );
+            None
+        }
+    }
+}
+
+async fn load_or_create_issue_session(
+    payload: &IssueCommentPayload,
+    db: &DbPool,
+    forgejo: &ForgejoClient,
+    config: &Config,
+) -> IssueCommentSessionResult {
+    let issue_id = payload.issue.number as i64;
+    let existing_session =
+        match get_session_by_issue(db, &payload.repository.full_name, issue_id).await {
+            Ok(session) => session,
+            Err(e) => {
+                error!("Failed to get session: {}", e);
+                let err_msg = comment_text_error(&format!("Failed to load session: {}", e));
+                post_issue_comment_non_blocking(
+                    forgejo,
+                    &payload.repository.full_name,
+                    payload.issue.number,
+                    &err_msg,
+                    "session load error",
+                )
+                .await;
+                return IssueCommentSessionResult::ErrorLogged;
+            }
+        };
+
+    if let Some(session) = existing_session {
+        if session.state.is_busy() {
+            info!(
+                "Session {} is busy (state: {}), posting busy comment",
+                session.id, session.state
+            );
+            let busy_msg = comment_text_busy();
+            if let Err(e) = forgejo
+                .post_issue_comment(
+                    &payload.repository.full_name,
+                    payload.issue.number,
+                    &busy_msg,
+                )
+                .await
+            {
+                error!("Failed to post busy comment: {}", e);
+            }
+            return IssueCommentSessionResult::Busy;
+        }
+
+        return IssueCommentSessionResult::Ready(session);
+    }
+
+    let session_id = derive_session_id(&payload.repository.full_name, payload.issue.number);
+    let worktree_path = worktree_path(
+        &config.opencode,
+        &payload.repository.full_name,
+        payload.issue.number,
+    );
+    let new_session = NewSession {
+        id: uuid::Uuid::new_v4().to_string(),
+        repo_full_name: payload.repository.full_name.clone(),
+        issue_id,
+        pr_id: None,
+        opencode_session_id: session_id,
+        worktree_path: worktree_path.display().to_string(),
+        state: SessionState::Idle.as_str().to_string(),
+        mode: SessionMode::Collab.as_str().to_string(),
+    };
+
+    if let Err(e) = insert_session(db, &new_session).await {
+        error!(
+            repo = %payload.repository.full_name,
+            issue_id = %payload.issue.number,
+            err = %e,
+            "Failed to create session"
+        );
+        let err_msg = comment_text_error(&format!("Failed to create session: {}", e));
+        post_issue_comment_non_blocking(
+            forgejo,
+            &payload.repository.full_name,
+            payload.issue.number,
+            &err_msg,
+            "session create error",
+        )
+        .await;
+        return IssueCommentSessionResult::ErrorLogged;
+    }
+
+    match get_session_by_issue(db, &payload.repository.full_name, issue_id).await {
+        Ok(Some(session)) => IssueCommentSessionResult::Ready(session),
+        Ok(None) => {
+            error!(
+                repo = %payload.repository.full_name,
+                issue_id = %payload.issue.number,
+                "Session missing immediately after create"
+            );
+            IssueCommentSessionResult::CreationError
+        }
+        Err(e) => {
+            error!(
+                repo = %payload.repository.full_name,
+                issue_id = %payload.issue.number,
+                err = %e,
+                "Failed to retrieve newly created session"
+            );
+            IssueCommentSessionResult::CreationError
+        }
+    }
+}
+
+async fn apply_build_mode_switch_if_requested(
+    build_requested: bool,
+    session_record: &mut Session,
+    payload: &IssueCommentPayload,
+    db: &DbPool,
+    forgejo: &ForgejoClient,
+) -> Result<(), Response> {
+    if build_requested && session_record.mode != SessionMode::Build {
+        if let Err(e) =
+            update_session_mode(db, &session_record.id, SessionMode::Build.as_str()).await
+        {
+            error!(
+                repo = %payload.repository.full_name,
+                issue_id = %payload.issue.number,
+                session_id = %session_record.id,
+                err = %e,
+                "Failed to update session mode"
+            );
+            let err_msg =
+                comment_text_error(&format!("Failed to switch session to build mode: {}", e));
+            post_issue_comment_non_blocking(
+                forgejo,
+                &payload.repository.full_name,
+                payload.issue.number,
+                &err_msg,
+                "session mode update error",
+            )
+            .await;
+            return Err(ok_response("OK - error logged"));
+        }
+        session_record.mode = SessionMode::Build;
+    }
+
+    Ok(())
+}
+
+async fn post_issue_acknowledgement(
+    forgejo: &ForgejoClient,
+    payload: &IssueCommentPayload,
+    action: SessionAction,
+) {
+    let ack_msg = match action {
+        SessionAction::Plan => comment_text_thinking(),
+        SessionAction::Build | SessionAction::Revision => comment_text_working(),
+    };
+
+    post_issue_comment_non_blocking(
+        forgejo,
+        &payload.repository.full_name,
+        payload.issue.number,
+        &ack_msg,
+        "acknowledgement",
+    )
+    .await;
+}
+
+fn spawn_issue_dispatch(
+    payload: IssueCommentPayload,
+    db: DbPool,
+    forgejo: ForgejoClient,
+    config: Config,
+    action: SessionAction,
+) {
+    let trigger = SessionTrigger {
+        repo_full_name: payload.repository.full_name.clone(),
+        issue_id: payload.issue.number,
+        pr_id: None,
+        action,
+    };
+
+    tokio::spawn(async move {
+        if let Err(e) = dispatch_session(&db, &forgejo, &config, trigger).await {
+            error!(
+                "dispatch_session failed for {} issue {}: {}",
+                payload.repository.full_name, payload.issue.number, e
+            );
+        }
+    });
+}
+
 /// Handle issue_comment webhook events
 pub async fn handle_issue_comment(
     payload: IssueCommentPayload,
@@ -91,25 +305,8 @@ pub async fn handle_issue_comment(
     }
 
     // 2. Ignore if repository repo_full_name not in repos table (not watched)
-    match get_repo_by_full_name(db, &payload.repository.full_name).await {
-        Ok(Some(_repo)) => {
-            // Repo exists and is watched, continue processing
-        }
-        Ok(None) => {
-            info!(
-                "Repository '{}' not watched, ignoring comment",
-                payload.repository.full_name
-            );
-            return Ok(ok_response("OK - repo not watched"));
-        }
-        Err(e) => {
-            error!(
-                repo = %payload.repository.full_name,
-                err = %e,
-                "Failed to check repo watch state"
-            );
-            // Continue processing - don't make Forgejo retry
-        }
+    if let Some(response) = validate_watched_repo(db, &payload.repository.full_name).await {
+        return Ok(response);
     }
 
     // 3. Ignore if comment body does not contain "@forgebot"
@@ -123,203 +320,37 @@ pub async fn handle_issue_comment(
     info!(build_requested, "Parsed trigger flags from comment");
 
     // 5. Look up or create session row
-    let issue_id = payload.issue.number as i64;
-    let session_result = get_session_by_issue(db, &payload.repository.full_name, issue_id).await;
-
-    match session_result {
-        Ok(Some(session)) => {
-            // Check if session is busy
-            if session.state.is_busy() {
-                info!(
-                    "Session {} is busy (state: {}), posting busy comment",
-                    session.id, session.state
-                );
-                let busy_msg = comment_text_busy();
-                if let Err(e) = forgejo
-                    .post_issue_comment(
-                        &payload.repository.full_name,
-                        payload.issue.number,
-                        &busy_msg,
-                    )
-                    .await
-                {
-                    error!("Failed to post busy comment: {}", e);
-                }
-                return Ok(ok_response("OK - session busy"));
-            }
-        }
-        Ok(None) => {
-            // No existing session, will create one below
-        }
-        Err(e) => {
-            error!("Failed to get session: {}", e);
-            let err_msg = comment_text_error(&format!("Failed to load session: {}", e));
-            post_issue_comment_non_blocking(
-                forgejo,
-                &payload.repository.full_name,
-                payload.issue.number,
-                &err_msg,
-                "session load error",
-            )
-            .await;
-            return Ok(ok_response("OK - error logged"));
-        }
-    }
-
-    // 6. Create new session if needed and update state
-    let session_id = derive_session_id(&payload.repository.full_name, payload.issue.number);
-    // Check if session exists and create if not
-    let existing_session =
-        match get_session_by_issue(db, &payload.repository.full_name, issue_id).await {
-            Ok(session) => session,
-            Err(e) => {
-                error!(
-                    repo = %payload.repository.full_name,
-                    issue_id = %payload.issue.number,
-                    err = %e,
-                    "Failed to load session before create"
-                );
-                let err_msg = comment_text_error(&format!("Failed to load session: {}", e));
-                post_issue_comment_non_blocking(
-                    forgejo,
-                    &payload.repository.full_name,
-                    payload.issue.number,
-                    &err_msg,
-                    "session load before create",
-                )
-                .await;
-                return Ok(ok_response("OK - error logged"));
-            }
-        };
-
-    let mut session_record = if let Some(session) = existing_session {
-        session
-    } else {
-        // Create new session
-        let worktree_path = worktree_path(
-            &config.opencode,
-            &payload.repository.full_name,
-            payload.issue.number,
-        );
-        let new_session = NewSession {
-            id: uuid::Uuid::new_v4().to_string(),
-            repo_full_name: payload.repository.full_name.clone(),
-            issue_id,
-            pr_id: None,
-            opencode_session_id: session_id.clone(),
-            worktree_path: worktree_path.display().to_string(),
-            state: SessionState::Idle.as_str().to_string(),
-            mode: SessionMode::Collab.as_str().to_string(),
-        };
-
-        if let Err(e) = insert_session(db, &new_session).await {
-            error!(
-                repo = %payload.repository.full_name,
-                issue_id = %payload.issue.number,
-                err = %e,
-                "Failed to create session"
-            );
-            let err_msg = comment_text_error(&format!("Failed to create session: {}", e));
-            post_issue_comment_non_blocking(
-                forgejo,
-                &payload.repository.full_name,
-                payload.issue.number,
-                &err_msg,
-                "session create error",
-            )
-            .await;
-            return Ok(ok_response("OK - error logged"));
-        }
-
-        // Retrieve the newly created session
-        match get_session_by_issue(db, &payload.repository.full_name, issue_id).await {
-            Ok(Some(session)) => session,
-            Ok(None) => {
-                error!(
-                    repo = %payload.repository.full_name,
-                    issue_id = %payload.issue.number,
-                    "Session missing immediately after create"
-                );
-                return Ok(ok_response("OK - session creation error"));
-            }
-            Err(e) => {
-                error!(
-                    repo = %payload.repository.full_name,
-                    issue_id = %payload.issue.number,
-                    err = %e,
-                    "Failed to retrieve newly created session"
-                );
-                return Ok(ok_response("OK - session creation error"));
-            }
+    let mut session_record = match load_or_create_issue_session(&payload, db, forgejo, config).await
+    {
+        IssueCommentSessionResult::Ready(session) => session,
+        IssueCommentSessionResult::Busy => return Ok(ok_response("OK - session busy")),
+        IssueCommentSessionResult::ErrorLogged => return Ok(ok_response("OK - error logged")),
+        IssueCommentSessionResult::CreationError => {
+            return Ok(ok_response("OK - session creation error"));
         }
     };
 
     // 7. Persist mode switch to build when requested.
-    if build_requested && session_record.mode != SessionMode::Build {
-        if let Err(e) =
-            update_session_mode(db, &session_record.id, SessionMode::Build.as_str()).await
-        {
-            error!(
-                repo = %payload.repository.full_name,
-                issue_id = %payload.issue.number,
-                session_id = %session_record.id,
-                err = %e,
-                "Failed to update session mode"
-            );
-            let err_msg =
-                comment_text_error(&format!("Failed to switch session to build mode: {}", e));
-            post_issue_comment_non_blocking(
-                forgejo,
-                &payload.repository.full_name,
-                payload.issue.number,
-                &err_msg,
-                "session mode update error",
-            )
-            .await;
-            return Ok(ok_response("OK - error logged"));
-        }
-        session_record.mode = SessionMode::Build;
+    if let Err(response) = apply_build_mode_switch_if_requested(
+        build_requested,
+        &mut session_record,
+        &payload,
+        db,
+        forgejo,
+    )
+    .await
+    {
+        return Ok(response);
     }
 
     let action = session_record.mode.action();
     info!(mode = %session_record.mode.as_str(), action = %action.as_str(), "Selected session mode and action");
 
     // 8. Post acknowledgement comment
-    let ack_msg = match action {
-        SessionAction::Plan => comment_text_thinking(),
-        SessionAction::Build | SessionAction::Revision => comment_text_working(),
-    };
-
-    post_issue_comment_non_blocking(
-        forgejo,
-        &payload.repository.full_name,
-        payload.issue.number,
-        &ack_msg,
-        "acknowledgement",
-    )
-    .await;
+    post_issue_acknowledgement(forgejo, &payload, action).await;
 
     // 9. Create SessionTrigger and dispatch in background task
-    let trigger = SessionTrigger {
-        repo_full_name: payload.repository.full_name.clone(),
-        issue_id: payload.issue.number,
-        pr_id: None,
-        action,
-    };
-
-    // Clone values for the spawned task
-    let db_clone = db.clone();
-    let forgejo_clone = forgejo.clone();
-    let config_clone = config.clone();
-
-    tokio::spawn(async move {
-        if let Err(e) = dispatch_session(&db_clone, &forgejo_clone, &config_clone, trigger).await {
-            error!(
-                "dispatch_session failed for {} issue {}: {}",
-                payload.repository.full_name, payload.issue.number, e
-            );
-        }
-    });
+    spawn_issue_dispatch(payload, db.clone(), forgejo.clone(), config.clone(), action);
 
     // 10. Return 200 immediately (non-blocking)
     Ok(ok_response("OK - dispatching session"))

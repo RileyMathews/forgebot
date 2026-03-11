@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use sqlx::query::Query;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions, SqliteRow};
 use sqlx::{Pool, Row, Sqlite};
 use std::path::Path;
@@ -113,7 +112,50 @@ fn map_pending_worktree_row(row: &SqliteRow) -> PendingWorktree {
     }
 }
 
-async fn init_db_common(db_path: &Path) -> Result<DbPool> {
+/// Initialize the database pool and run migrations
+pub async fn init_db(config: &DatabaseConfig) -> Result<DbPool> {
+    let db_path = &config.path;
+
+    // Ensure parent directory exists
+    if let Some(parent) = db_path.parent() {
+        tokio::fs::create_dir_all(parent).await.with_context(|| {
+            format!("Failed to create database directory: {}", parent.display())
+        })?;
+    }
+
+    // Build connection options with create_if_missing
+    let db_path_str = db_path
+        .to_str()
+        .context("Invalid database path (not UTF-8)")?;
+    let connect_options = SqliteConnectOptions::new()
+        .filename(db_path_str)
+        .create_if_missing(true);
+
+    debug!("Connecting to database at: {}", db_path.display());
+
+    // Create connection pool
+    let pool = SqlitePoolOptions::new()
+        .connect_with(connect_options)
+        .await
+        .with_context(|| format!("Failed to connect to database: {}", db_path.display()))?;
+
+    // Run migrations
+    info!("Running database migrations...");
+    sqlx::migrate!("./migrations")
+        .run(&pool)
+        .await
+        .context("Failed to run database migrations")?;
+
+    info!(
+        "Database initialized successfully at: {}",
+        db_path.display()
+    );
+    Ok(pool)
+}
+
+/// Initialize database from a path directly (for testing)
+pub async fn init_db_at_path(db_path: &Path) -> Result<DbPool> {
+    // Ensure parent directory exists
     if let Some(parent) = db_path.parent() {
         tokio::fs::create_dir_all(parent).await.with_context(|| {
             format!("Failed to create database directory: {}", parent.display())
@@ -134,7 +176,6 @@ async fn init_db_common(db_path: &Path) -> Result<DbPool> {
         .await
         .with_context(|| format!("Failed to connect to database: {}", db_path.display()))?;
 
-    info!("Running database migrations...");
     sqlx::migrate!("./migrations")
         .run(&pool)
         .await
@@ -145,34 +186,6 @@ async fn init_db_common(db_path: &Path) -> Result<DbPool> {
         db_path.display()
     );
     Ok(pool)
-}
-
-async fn execute_session_update<'q>(
-    pool: &DbPool,
-    session_id: &str,
-    operation: &str,
-    query: Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
-) -> Result<()> {
-    let result = query
-        .execute(pool)
-        .await
-        .with_context(|| format!("Failed to {}: {}", operation, session_id))?;
-
-    if result.rows_affected() == 0 {
-        anyhow::bail!("Session not found: {}", session_id);
-    }
-
-    Ok(())
-}
-
-/// Initialize the database pool and run migrations
-pub async fn init_db(config: &DatabaseConfig) -> Result<DbPool> {
-    init_db_common(&config.path).await
-}
-
-/// Initialize database from a path directly (for testing)
-pub async fn init_db_at_path(db_path: &Path) -> Result<DbPool> {
-    init_db_common(db_path).await
 }
 
 // ============================================================================
@@ -568,21 +581,22 @@ pub async fn update_session_state(
         .parse::<SessionState>()
         .with_context(|| format!("Invalid session state '{}': expected known state", state))?;
 
-    execute_session_update(
-        pool,
-        session_id,
-        "update session state",
-        sqlx::query(
-            r#"
-            UPDATE sessions
-            SET state = ?1, updated_at = datetime('now')
-            WHERE id = ?2
-            "#,
-        )
-        .bind(parsed_state.as_str())
-        .bind(session_id),
+    let result = sqlx::query(
+        r#"
+        UPDATE sessions
+        SET state = ?1, updated_at = datetime('now')
+        WHERE id = ?2
+        "#,
     )
-    .await?;
+    .bind(parsed_state.as_str())
+    .bind(session_id)
+    .execute(pool)
+    .await
+    .with_context(|| format!("Failed to update session state: {}", session_id))?;
+
+    if result.rows_affected() == 0 {
+        anyhow::bail!("Session not found: {}", session_id);
+    }
 
     debug!(
         "Updated session state: {} -> {}",
@@ -594,21 +608,22 @@ pub async fn update_session_state(
 
 /// Update a session's PR ID
 pub async fn update_session_pr_id(pool: &DbPool, session_id: &str, pr_id: i64) -> Result<()> {
-    execute_session_update(
-        pool,
-        session_id,
-        "update session PR ID",
-        sqlx::query(
-            r#"
-            UPDATE sessions
-            SET pr_id = ?1, updated_at = datetime('now')
-            WHERE id = ?2
-            "#,
-        )
-        .bind(pr_id)
-        .bind(session_id),
+    let result = sqlx::query(
+        r#"
+        UPDATE sessions
+        SET pr_id = ?1, updated_at = datetime('now')
+        WHERE id = ?2
+        "#,
     )
-    .await?;
+    .bind(pr_id)
+    .bind(session_id)
+    .execute(pool)
+    .await
+    .with_context(|| format!("Failed to update session PR ID: {}", session_id))?;
+
+    if result.rows_affected() == 0 {
+        anyhow::bail!("Session not found: {}", session_id);
+    }
 
     debug!("Updated session PR ID: {} -> {}", session_id, pr_id);
     Ok(())
@@ -733,21 +748,22 @@ pub async fn update_session_opencode_id(
     session_id: &str,
     opencode_session_id: &str,
 ) -> Result<()> {
-    execute_session_update(
-        pool,
-        session_id,
-        "update session opencode ID",
-        sqlx::query(
-            r#"
-            UPDATE sessions
-            SET opencode_session_id = ?1, updated_at = datetime('now')
-            WHERE id = ?2
-            "#,
-        )
-        .bind(opencode_session_id)
-        .bind(session_id),
+    let result = sqlx::query(
+        r#"
+        UPDATE sessions
+        SET opencode_session_id = ?1, updated_at = datetime('now')
+        WHERE id = ?2
+        "#,
     )
-    .await?;
+    .bind(opencode_session_id)
+    .bind(session_id)
+    .execute(pool)
+    .await
+    .with_context(|| format!("Failed to update session opencode ID: {}", session_id))?;
+
+    if result.rows_affected() == 0 {
+        anyhow::bail!("Session not found: {}", session_id);
+    }
 
     debug!(
         "Updated session opencode ID: {} -> {}",
@@ -767,21 +783,22 @@ pub async fn update_session_mode(
         .parse::<SessionMode>()
         .with_context(|| format!("Invalid session mode '{}': expected known mode", mode))?;
 
-    execute_session_update(
-        pool,
-        session_id,
-        "update session mode",
-        sqlx::query(
-            r#"
-            UPDATE sessions
-            SET mode = ?1, updated_at = datetime('now')
-            WHERE id = ?2
-            "#,
-        )
-        .bind(parsed_mode.as_str())
-        .bind(session_id),
+    let result = sqlx::query(
+        r#"
+        UPDATE sessions
+        SET mode = ?1, updated_at = datetime('now')
+        WHERE id = ?2
+        "#,
     )
-    .await?;
+    .bind(parsed_mode.as_str())
+    .bind(session_id)
+    .execute(pool)
+    .await
+    .with_context(|| format!("Failed to update session mode: {}", session_id))?;
+
+    if result.rows_affected() == 0 {
+        anyhow::bail!("Session not found: {}", session_id);
+    }
 
     debug!(
         "Updated session mode: {} -> {}",
