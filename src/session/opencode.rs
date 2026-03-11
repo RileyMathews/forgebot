@@ -1265,6 +1265,12 @@ mod tests {
             git_binary: "git".to_string(),
             model: "opencode/kimi-k2.5".to_string(),
             web_host: None,
+            transport: crate::config::OpencodeTransport::Cli,
+            api: crate::config::OpencodeApiConfig {
+                base_url: None,
+                token: None,
+                timeout_secs: 30,
+            },
         };
 
         // First call should create all files
@@ -1310,6 +1316,12 @@ mod tests {
             git_binary: "git".to_string(),
             model: "opencode/kimi-k2.5".to_string(),
             web_host: None,
+            transport: crate::config::OpencodeTransport::Cli,
+            api: crate::config::OpencodeApiConfig {
+                base_url: None,
+                token: None,
+                timeout_secs: 30,
+            },
         };
 
         // Setup should succeed and overwrite managed files
