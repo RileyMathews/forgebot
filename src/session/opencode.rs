@@ -401,7 +401,14 @@ esac
 
     // Try to capture the opencode session ID
     let captured_session_id = if status.success() {
-        match capture_opencode_session_id(&binary_path, derived_session_id, &env_vars).await {
+        match capture_opencode_session_id(
+            &binary_path,
+            derived_session_id,
+            &env_vars,
+            worktree_path,
+        )
+        .await
+        {
             Ok(Some(id)) => {
                 info!("Captured opencode session ID: {}", id);
                 Some(id)
@@ -444,6 +451,7 @@ async fn capture_opencode_session_id(
     binary_path: &str,
     title: &str,
     env_vars: &HashMap<String, String>,
+    worktree_path: &Path,
 ) -> Result<Option<String>> {
     const ATTEMPTS: usize = 5;
 
@@ -456,6 +464,7 @@ async fn capture_opencode_session_id(
             .arg("-n")
             .arg("50")
             .envs(env_vars)
+            .current_dir(worktree_path)
             .output()
             .await
             .with_context(|| {
@@ -465,8 +474,26 @@ async fn capture_opencode_session_id(
                 )
             })?;
 
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        debug!(
+            attempt,
+            total_attempts = ATTEMPTS,
+            exit_code = ?output.status.code(),
+            stdout_len = stdout.len(),
+            stderr_len = stderr.len(),
+            "opencode session list command completed"
+        );
+
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+            warn!(
+                attempt,
+                total_attempts = ATTEMPTS,
+                exit_code = ?output.status.code(),
+                stderr = %truncate_for_log(&stderr, 1500),
+                stdout = %truncate_for_log(&stdout, 1500),
+                "opencode session list returned non-zero exit code"
+            );
             anyhow::bail!(
                 "opencode session list failed on attempt {}/{}: {}",
                 attempt,
@@ -475,11 +502,15 @@ async fn capture_opencode_session_id(
             );
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-
         match serde_json::from_str::<serde_json::Value>(&stdout) {
             Ok(sessions) => {
                 if let Some(sessions_array) = sessions.as_array() {
+                    debug!(
+                        attempt,
+                        total_attempts = ATTEMPTS,
+                        session_count = sessions_array.len(),
+                        "parsed opencode session list JSON"
+                    );
                     for session in sessions_array {
                         if let Some(session_title) = session.get("title").and_then(|t| t.as_str())
                             && session_title == title
@@ -491,6 +522,15 @@ async fn capture_opencode_session_id(
                 }
             }
             Err(e) => {
+                warn!(
+                    attempt,
+                    total_attempts = ATTEMPTS,
+                    exit_code = ?output.status.code(),
+                    parse_error = %e,
+                    stderr = %truncate_for_log(&stderr, 1500),
+                    stdout = %truncate_for_log(&stdout, 1500),
+                    "failed to parse opencode session list JSON"
+                );
                 anyhow::bail!(
                     "Failed to parse opencode session list JSON on attempt {}/{}: {}",
                     attempt,
@@ -500,12 +540,33 @@ async fn capture_opencode_session_id(
             }
         }
 
+        debug!(
+            attempt,
+            total_attempts = ATTEMPTS,
+            target_title = %title,
+            "target session title not found in opencode session list"
+        );
+
         if attempt < ATTEMPTS {
             sleep(Duration::from_millis((attempt as u64) * 200)).await;
         }
     }
 
     Ok(None)
+}
+
+fn truncate_for_log(value: &str, max_chars: usize) -> String {
+    let char_count = value.chars().count();
+    if char_count <= max_chars {
+        return value.to_string();
+    }
+
+    let truncated: String = value.chars().take(max_chars).collect();
+    format!(
+        "{}... [truncated {} chars]",
+        truncated,
+        char_count - max_chars
+    )
 }
 
 struct IssueContext {
