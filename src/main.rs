@@ -24,13 +24,7 @@ async fn main() -> Result<()> {
 
     // Ensure worktree base directory exists
     tokio::fs::create_dir_all(&config.opencode.worktree_base)
-        .await
-        .with_context(|| {
-            format!(
-                "Failed to create worktree base directory: {}",
-                config.opencode.worktree_base.display()
-            )
-        })?;
+        .await.expect("could not create opencode worktree dir");
 
     info!(
         config_dir = %config.opencode.config_dir.display(),
@@ -60,7 +54,7 @@ async fn main() -> Result<()> {
     let health = api_client
         .health()
         .await
-        .context("Failed OpenCode API startup health check")?;
+        .expect("Opencode API should be healthy");
     if !health.healthy {
         anyhow::bail!(
             "OpenCode API health check returned unhealthy status (version={})",
