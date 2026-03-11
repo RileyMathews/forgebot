@@ -1,6 +1,7 @@
 pub mod clone;
 pub mod env_loader;
 pub mod opencode;
+pub mod opencode_api;
 pub mod repo_cleanup;
 pub mod worktree;
 
