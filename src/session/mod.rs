@@ -222,6 +222,15 @@ pub struct SessionTrigger {
     pub action: SessionAction,
 }
 
+#[derive(Debug, Clone)]
+pub struct PromptContext<'a> {
+    pub repo_full_name: &'a str,
+    pub issue_id: u64,
+    pub pr_id: Option<u64>,
+    pub base_branch: &'a str,
+    pub work_branch: &'a str,
+}
+
 /// Comment text helpers for consistent bot messaging
 pub fn comment_text_thinking() -> String {
     "🤖 forgebot is thinking...".to_string()
@@ -304,23 +313,34 @@ fn sanitize_for_session_id(s: &str) -> String {
 /// The full prompt string for opencode
 pub fn build_prompt(
     phase: SessionAction,
+    context: &PromptContext<'_>,
     issue: &Issue,
     issue_comments: &[IssueComment],
     pr_review_comments: &[PullRequestReviewComment],
-    pr_id: Option<u64>,
 ) -> String {
     match phase {
-        SessionAction::Plan => build_plan_prompt(issue, issue_comments),
-        SessionAction::Build => build_build_prompt(issue, issue_comments),
-        SessionAction::Revision => build_revision_prompt(issue, pr_review_comments, pr_id),
+        SessionAction::Plan => build_plan_prompt(context, issue, issue_comments),
+        SessionAction::Build => build_build_prompt(context, issue, issue_comments),
+        SessionAction::Revision => build_revision_prompt(context, issue, pr_review_comments),
     }
 }
 
-fn build_plan_prompt(issue: &Issue, issue_comments: &[IssueComment]) -> String {
+fn build_plan_prompt(
+    context: &PromptContext<'_>,
+    issue: &Issue,
+    issue_comments: &[IssueComment],
+) -> String {
     let comments_text = format_issue_comments(issue_comments);
 
     format!(
-        r#"You are working on issue #{issue_number} in repository.
+        r#"You are working on issue #{issue_number}.
+
+Explicit context (use these exact values for Forgejo tool arguments):
+- repo: {repo}
+- issue_id: {issue_id}
+- pr_id: {pr_id}
+- base_branch: {base_branch}
+- work_branch: {work_branch}
 
 Issue Title: {title}
 
@@ -342,7 +362,15 @@ Do not create commits or open a pull request in this mode.
 
 When the user is ready for implementation, they can trigger @forgebot with --build.
 
-Post your response as a comment on this issue using the comment-issue tool."#,
+Post your response as a comment on this issue using the comment-issue tool with explicit arguments: repo={repo}, issue_id={issue_id}."#,
+        repo = context.repo_full_name,
+        issue_id = context.issue_id,
+        pr_id = context
+            .pr_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "(none)".to_string()),
+        base_branch = context.base_branch,
+        work_branch = context.work_branch,
         issue_number = issue.number,
         title = issue.title,
         body = issue.body.as_deref().unwrap_or("(no body)"),
@@ -354,12 +382,23 @@ Post your response as a comment on this issue using the comment-issue tool."#,
     )
 }
 
-fn build_build_prompt(issue: &Issue, issue_comments: &[IssueComment]) -> String {
+fn build_build_prompt(
+    context: &PromptContext<'_>,
+    issue: &Issue,
+    issue_comments: &[IssueComment],
+) -> String {
     // For now, include all comments. In the future, we may filter by session creation time.
     let comments_text = format_issue_comments(issue_comments);
 
     format!(
         r#"You are continuing work on issue #{issue_number}.
+
+Explicit context (use these exact values for Forgejo tool arguments):
+- repo: {repo}
+- issue_id: {issue_id}
+- pr_id: {pr_id}
+- base_branch: {base_branch}
+- work_branch: {work_branch}
 
 Issue Title: {title}
 
@@ -377,7 +416,21 @@ Build mode is active. Your task: Implement the solution and open a pull request.
 4. Create a pull request using the create-pr tool
 5. Link the PR to this issue in the description
 
-Use the available tools to interact with the repository and create the PR."#,
+Use explicit tool arguments for every Forgejo operation.
+
+When creating the PR, set create-pr arguments to:
+- repo={repo}
+- issue_id={issue_id}
+- head={work_branch}
+- base={base_branch}"#,
+        repo = context.repo_full_name,
+        issue_id = context.issue_id,
+        pr_id = context
+            .pr_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "(none)".to_string()),
+        base_branch = context.base_branch,
+        work_branch = context.work_branch,
         issue_number = issue.number,
         title = issue.title,
         body = issue.body.as_deref().unwrap_or("(no body)"),
@@ -390,15 +443,22 @@ Use the available tools to interact with the repository and create the PR."#,
 }
 
 fn build_revision_prompt(
+    context: &PromptContext<'_>,
     issue: &Issue,
     pr_review_comments: &[PullRequestReviewComment],
-    pr_id: Option<u64>,
 ) -> String {
-    let pr_num = pr_id.unwrap_or(0);
+    let pr_num = context.pr_id.unwrap_or(0);
     let review_comments_text = format_pr_review_comments(pr_review_comments);
 
     format!(
         r#"Your PR #{pr_number} on issue #{issue_number} has received review comments.
+
+Explicit context (use these exact values for Forgejo tool arguments):
+- repo: {repo}
+- issue_id: {issue_id}
+- pr_id: {pr_id}
+- base_branch: {base_branch}
+- work_branch: {work_branch}
 
 Issue Title: {title}
 
@@ -416,7 +476,15 @@ Your task: Address these review comments and force-push an updated commit.
 4. Force-push the updated branch
 5. Verify all comments are addressed
 
-Use the available tools to make changes and update the PR."#,
+Use explicit tool arguments for every Forgejo operation (repo/pr_id must match the context block)."#,
+        repo = context.repo_full_name,
+        issue_id = context.issue_id,
+        pr_id = context
+            .pr_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "(none)".to_string()),
+        base_branch = context.base_branch,
+        work_branch = context.work_branch,
         pr_number = pr_num,
         issue_number = issue.number,
         title = issue.title,
@@ -549,7 +617,14 @@ mod tests {
     fn test_build_plan_prompt() {
         let issue = test_issue();
         let comments = test_comments();
-        let prompt = build_prompt(SessionAction::Plan, &issue, &comments, &[], None);
+        let context = PromptContext {
+            repo_full_name: "alice/project",
+            issue_id: 42,
+            pr_id: None,
+            base_branch: "main",
+            work_branch: "agent/issue-42",
+        };
+        let prompt = build_prompt(SessionAction::Plan, &context, &issue, &comments, &[]);
 
         // Check for key components
         assert!(prompt.contains("issue #42"));
@@ -562,19 +637,30 @@ mod tests {
         assert!(prompt.contains("You are in collaboration mode"));
         assert!(prompt.contains("Do not create commits or open a pull request"));
         assert!(prompt.contains("@forgebot with --build"));
+        assert!(prompt.contains("repo: alice/project"));
+        assert!(prompt.contains("issue_id: 42"));
     }
 
     #[test]
     fn test_build_build_prompt() {
         let issue = test_issue();
         let comments = test_comments();
-        let prompt = build_prompt(SessionAction::Build, &issue, &comments, &[], None);
+        let context = PromptContext {
+            repo_full_name: "alice/project",
+            issue_id: 42,
+            pr_id: None,
+            base_branch: "main",
+            work_branch: "agent/issue-42",
+        };
+        let prompt = build_prompt(SessionAction::Build, &context, &issue, &comments, &[]);
 
         // Check for key components
         assert!(prompt.contains("issue #42"));
         assert!(prompt.contains("Build mode is active"));
         assert!(prompt.contains("Your task: Implement the solution"));
         assert!(prompt.contains("open a pull request"));
+        assert!(prompt.contains("head=agent/issue-42"));
+        assert!(prompt.contains("base=main"));
     }
 
     #[test]
@@ -589,12 +675,19 @@ mod tests {
             created_at: "2024-01-03T10:00:00Z".to_string(),
             updated_at: "2024-01-03T10:00:00Z".to_string(),
         }];
+        let context = PromptContext {
+            repo_full_name: "alice/project",
+            issue_id: 42,
+            pr_id: Some(123),
+            base_branch: "main",
+            work_branch: "agent/issue-42",
+        };
         let prompt = build_prompt(
             SessionAction::Revision,
+            &context,
             &issue,
             &[],
             &review_comments,
-            Some(123),
         );
 
         // Check for key components
@@ -604,12 +697,20 @@ mod tests {
         assert!(prompt.contains("testuser on src/main.rs:42"));
         assert!(prompt.contains("Your task: Address these review comments"));
         assert!(prompt.contains("force-push an updated commit"));
+        assert!(prompt.contains("pr_id: 123"));
     }
 
     #[test]
     fn test_build_prompt_empty_comments() {
         let issue = test_issue();
-        let prompt = build_prompt(SessionAction::Plan, &issue, &[], &[], None);
+        let context = PromptContext {
+            repo_full_name: "alice/project",
+            issue_id: 42,
+            pr_id: None,
+            base_branch: "main",
+            work_branch: "agent/issue-42",
+        };
+        let prompt = build_prompt(SessionAction::Plan, &context, &issue, &[], &[]);
 
         assert!(prompt.contains("(no comments)"));
     }

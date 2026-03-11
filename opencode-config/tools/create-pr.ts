@@ -28,13 +28,15 @@ function normalizeRepoFullName(value: string): string {
   }
 
   throw new Error(
-    `Invalid FORGEBOT_REPO='${repo}'. Expected 'owner/repo' or full repo URL.`
+    `Invalid repo='${repo}'. Expected 'owner/repo' or full repo URL.`
   )
 }
 
 export default tool({
   description: "Open a pull request on Forgejo. The body must contain 'Closes #<issue_id>' on its own line.",
   args: {
+    repo: tool.schema.string().describe("Target repository in owner/repo format"),
+    issue_id: tool.schema.number().int().positive().describe("Linked issue number for validation"),
     title: tool.schema.string().describe("Pull request title"),
     body: tool.schema.string().describe("Pull request body (markdown). Must include 'Closes #N' on its own line."),
     head: tool.schema.string().describe("Source branch name (e.g. agent/issue-42)"),
@@ -43,7 +45,11 @@ export default tool({
   async execute(args) {
     const forgejoUrl = normalizeForgejoBaseUrl(requiredEnv("FORGEBOT_FORGEJO_URL"))
     const token = requiredEnv("FORGEBOT_FORGEJO_TOKEN")
-    const repo = normalizeRepoFullName(requiredEnv("FORGEBOT_REPO"))
+    const repo = normalizeRepoFullName(args.repo)
+    const closesLine = `Closes #${args.issue_id}`
+    if (!args.body.split(/\r?\n/).some((line) => line.trim() === closesLine)) {
+      return `Failed: PR body must include '${closesLine}' on its own line.`
+    }
     const res = await fetch(
       `${forgejoUrl}/api/v1/repos/${repo}/pulls`,
       {

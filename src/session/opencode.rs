@@ -20,7 +20,7 @@ use crate::session::opencode_api::{
 };
 use crate::session::worktree;
 use crate::session::{
-    SESSION_BUSY_STATES, SessionAction, SessionState, SessionTrigger, build_prompt,
+    PromptContext, SESSION_BUSY_STATES, SessionAction, SessionState, SessionTrigger, build_prompt,
     derive_session_id, opencode_session_web_url,
 };
 use anyhow::{Context, Result, anyhow, bail};
@@ -153,7 +153,6 @@ pub struct RunOpencodeParams<'a> {
 pub async fn run_opencode(params: RunOpencodeParams<'_>) -> Result<Option<String>> {
     let binary = &params.config.opencode.binary;
     let opencode_config_home = params.config.opencode.config_dir.clone();
-    let repo_full_name = params.repo_full_name;
     let derived_session_id = params.derived_session_id;
     let agent_mode = params.agent_mode;
     let model = params.model;
@@ -239,7 +238,6 @@ pub async fn run_opencode(params: RunOpencodeParams<'_>) -> Result<Option<String
         "FORGEBOT_FORGEJO_TOKEN".to_string(),
         params.config.forgejo.token.clone(),
     );
-    env_vars.insert("FORGEBOT_REPO".to_string(), repo_full_name.to_string());
     // Note: XDG_DATA_HOME and XDG_CONFIG_HOME are set by the systemd service
     // and inherited from the process environment. These control where opencode
     // looks for auth.json ($XDG_DATA_HOME/opencode/auth.json) and global config.
@@ -959,21 +957,6 @@ Error output: {}",
     }
 }
 
-fn build_session_env(
-    trigger: &SessionTrigger,
-    env_extras: &HashMap<String, String>,
-) -> HashMap<String, String> {
-    let mut session_env = env_extras.clone();
-    session_env.insert(
-        "FORGEBOT_ISSUE_ID".to_string(),
-        trigger.issue_id.to_string(),
-    );
-    if let Some(pr_id) = trigger.pr_id {
-        session_env.insert("FORGEBOT_PR_ID".to_string(), pr_id.to_string());
-    }
-    session_env
-}
-
 fn external_session_id(session: &Session) -> Option<&str> {
     let opencode_session_id = session.opencode_session_id.trim();
     if opencode_session_id.is_empty() || opencode_session_id.starts_with("ses_") {
@@ -1321,19 +1304,27 @@ pub async fn dispatch_session(
         reject_if_session_busy(forgejo, &trigger, &session_id, &existing_session).await?;
     }
 
-    // 3. Build prompt
-    let prompt = build_prompt(
-        trigger.action,
-        &issue_context.issue,
-        &issue_context.issue_comments,
-        &issue_context.pr_review_comments,
-        trigger.pr_id,
-    );
-
-    // 4. Look up repository metadata and ensure worktree exists
+    // 3. Look up repository metadata and ensure worktree exists
     let repo_record = lookup_repo_record(db, &trigger).await?;
     let worktree_path =
         ensure_session_worktree(config, &trigger, &repo_record.default_branch).await?;
+
+    // 4. Build prompt with explicit target context
+    let work_branch = format!("agent/issue-{}", trigger.issue_id);
+    let prompt_context = PromptContext {
+        repo_full_name: &trigger.repo_full_name,
+        issue_id: trigger.issue_id,
+        pr_id: trigger.pr_id,
+        base_branch: &repo_record.default_branch,
+        work_branch: &work_branch,
+    };
+    let prompt = build_prompt(
+        trigger.action,
+        &prompt_context,
+        &issue_context.issue,
+        &issue_context.issue_comments,
+        &issue_context.pr_review_comments,
+    );
 
     // 5. In API mode, reject triggers while OpenCode reports busy/retry.
     if config.opencode.transport == OpencodeTransport::Api {
@@ -1448,10 +1439,7 @@ pub async fn dispatch_session(
     // 11. Determine agent mode
     let agent_mode = trigger.action.agent_mode();
 
-    // 12. Set FORGEBOT_* env vars for this session
-    let session_env = build_session_env(&trigger, &env_extras);
-
-    // 13. Spawn opencode
+    // 12. Spawn opencode
     let external_session_id = external_session_id(&session_record);
 
     info!(
@@ -1473,7 +1461,7 @@ pub async fn dispatch_session(
                 model: &config.opencode.model,
                 worktree_path: &worktree_path,
                 prompt: &prompt,
-                env_extras: session_env,
+                env_extras,
             })
             .await,
             true,

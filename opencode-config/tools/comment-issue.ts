@@ -30,22 +30,23 @@ function normalizeRepoFullName(value: string): string {
   }
 
   throw new Error(
-    `Invalid FORGEBOT_REPO='${repo}'. Expected 'owner/repo' or full repo URL.`
+    `Invalid repo='${repo}'. Expected 'owner/repo' or full repo URL.`
   )
 }
 
 export default tool({
   description: "Post a markdown comment on a Forgejo issue",
   args: {
+    repo: tool.schema.string().describe("Target repository in owner/repo format"),
+    issue_id: tool.schema.number().int().positive().describe("Target issue number"),
     body: tool.schema.string().describe("Markdown content of the comment"),
   },
   async execute(args) {
     const forgejoUrl = normalizeForgejoBaseUrl(requiredEnv("FORGEBOT_FORGEJO_URL"))
     const token = requiredEnv("FORGEBOT_FORGEJO_TOKEN")
-    const repo = normalizeRepoFullName(requiredEnv("FORGEBOT_REPO"))
-    const issueId = requiredEnv("FORGEBOT_ISSUE_ID")
+    const repo = normalizeRepoFullName(args.repo)
     const res = await fetch(
-      `${forgejoUrl}/api/v1/repos/${repo}/issues/${issueId}/comments`,
+      `${forgejoUrl}/api/v1/repos/${repo}/issues/${args.issue_id}/comments`,
       {
         method: "POST",
         headers: {
