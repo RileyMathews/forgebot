@@ -173,8 +173,13 @@ All other configuration values use sensible defaults:
 - `FORGEBOT_OPENCODE_WORKTREE_BASE`: `/var/lib/forgebot/worktrees`
 - `FORGEBOT_OPENCODE_CONFIG_DIR`: `/var/lib/forgebot/opencode-config`
 - `FORGEBOT_OPENCODE_MODEL`: `opencode/kimi-k2.5`
+- `FORGEBOT_OPENCODE_TRANSPORT`: `api`
+- `FORGEBOT_OPENCODE_API_BASE_URL`: `http://127.0.0.1:4096`
+- `FORGEBOT_OPENCODE_API_TIMEOUT_SECS`: `30`
 - `FORGEBOT_OPENCODE_WEB_HOST`: *(unset)* (when set, forgebot posts session Web UI links)
 - `FORGEBOT_DATABASE_PATH`: `/var/lib/forgebot/forgebot.db`
+
+Set `FORGEBOT_OPENCODE_TRANSPORT=cli` to use rollback compatibility mode.
 
 **Important**: `FORGEBOT_FORGEBOT_HOST` should be set to your public-facing URL for production deployments (e.g., `https://forgebot.example.com`). If not set, it defaults to `http://<server_host>:<server_port>`, which may not be accessible from the internet if the server is bound to localhost.
 
@@ -359,6 +364,10 @@ These have sensible defaults if not set:
 | `FORGEBOT_OPENCODE_BINARY` | `opencode` | Path to opencode binary |
 | `FORGEBOT_OPENCODE_WORKTREE_BASE` | `/var/lib/forgebot/worktrees` | Base directory for git worktrees |
 | `FORGEBOT_OPENCODE_CONFIG_DIR` | `/var/lib/forgebot/opencode-config` | Directory for opencode config files |
+| `FORGEBOT_OPENCODE_TRANSPORT` | `api` | OpenCode transport mode (`api` default, `cli` rollback compatibility mode) |
+| `FORGEBOT_OPENCODE_API_BASE_URL` | `http://127.0.0.1:4096` | Base URL for the OpenCode API server |
+| `FORGEBOT_OPENCODE_API_TOKEN` | *(unset)* | Optional bearer token for OpenCode API authentication |
+| `FORGEBOT_OPENCODE_API_TIMEOUT_SECS` | `30` | HTTP timeout for OpenCode API requests |
 | `FORGEBOT_OPENCODE_WEB_HOST` | *(unset)* | Public base URL for opencode Web UI. When set, forgebot comments a direct session link after it captures the opencode session ID. |
 | `FORGEBOT_GIT_BINARY` | `git` | Path to git binary. Set this to an absolute path (e.g., `/usr/bin/git`) if running under systemd or other environments with minimal PATH. |
 | `FORGEBOT_DATABASE_PATH` | `/var/lib/forgebot/forgebot.db` | Path to SQLite database |
@@ -485,6 +494,8 @@ process-compose up -D
 
 The runtime setup step copies host opencode auth from `${XDG_DATA_HOME:-$HOME/.local/share}/opencode/auth.json` into the sandbox. This keeps local forgebot runs isolated from your normal opencode config and cache while still reusing your existing login.
 
+The local stack starts both `forgebot` and `opencode serve` so API transport smoke tests run with production-like routing.
+
 To clean all local test artifacts:
 
 ```bash
@@ -492,6 +503,8 @@ rm -rf "$HOME/.local/state/forgebot-local-dev"
 ```
 
 ## Troubleshooting
+
+For API cutover and rollback procedures, see `docs/opencode-api-cutover-runbook.md`.
 
 ### Common Issues
 
