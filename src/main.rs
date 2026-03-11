@@ -25,6 +25,10 @@ async fn main() -> Result<()> {
     // Load configuration from environment variables
     let config = config::Config::load().context("Failed to load configuration")?;
 
+    // Set up git askpass script (once at startup)
+    config::setup_askpass_script(&config.opencode.askpass_path)
+        .context("Failed to set up git askpass script")?;
+
     // Set up opencode config directory
     session::opencode::setup_opencode_config_dir(&config.opencode)
         .context("Failed to set up opencode config directory")?;

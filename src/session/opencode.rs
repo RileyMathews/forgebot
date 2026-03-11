@@ -20,7 +20,6 @@ use crate::session::{
 use anyhow::{Context, Result, anyhow};
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Stdio;
 use tokio::process::Command;
@@ -254,45 +253,10 @@ pub async fn run_opencode(params: RunOpencodeParams<'_>) -> Result<Option<String
     );
 
     // Configure non-interactive git HTTPS auth using the Forgejo token.
-    // The token is already present in FORGEBOT_FORGEJO_TOKEN. This askpass script
+    // The token is already present in FORGEBOT_FORGEJO_TOKEN. The askpass script
     // returns bot username for username prompts and token for password prompts.
-    let askpass_path = std::env::temp_dir().join("forgebot-git-askpass.sh");
-    if let Some(parent) = askpass_path.parent() {
-        std::fs::create_dir_all(parent).with_context(|| {
-            format!(
-                "failed to create directory for git askpass script at {}",
-                parent.display()
-            )
-        })?;
-    }
-    std::fs::write(
-        &askpass_path,
-        r#"#!/bin/sh
-prompt="$1"
-case "$prompt" in
-  *Username*|*username*)
-    printf '%s\n' "${FORGEBOT_FORGEJO_BOT_USERNAME:-forgebot}"
-    ;;
-  *)
-    printf '%s\n' "${FORGEBOT_FORGEJO_TOKEN:-}"
-    ;;
-esac
-"#,
-    )
-    .with_context(|| {
-        format!(
-            "failed to write git askpass script at {}",
-            askpass_path.display()
-        )
-    })?;
-    std::fs::set_permissions(&askpass_path, std::fs::Permissions::from_mode(0o700)).with_context(
-        || {
-            format!(
-                "failed to set executable permissions on {}",
-                askpass_path.display()
-            )
-        },
-    )?;
+    // The script is written once at startup to the configured path.
+    let askpass_path = &params.config.opencode.askpass_path;
 
     env_vars.insert("GIT_TERMINAL_PROMPT".to_string(), "0".to_string());
     env_vars.insert(

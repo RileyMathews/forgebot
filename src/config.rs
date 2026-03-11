@@ -1,6 +1,20 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::path::PathBuf;
 use tracing::{info, warn};
+
+/// Script content for the git askpass helper.
+/// This script returns bot username for username prompts and token for password prompts.
+const ASKPASS_SCRIPT: &str = r#"#!/bin/sh
+prompt="$1"
+case "$prompt" in
+  *Username*|*username*)
+    printf '%s\n' "${FORGEBOT_FORGEJO_BOT_USERNAME:-forgebot}"
+    ;;
+  *)
+    printf '%s\n' "${FORGEBOT_FORGEJO_TOKEN:-}"
+    ;;
+esac
+"#;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -32,6 +46,7 @@ pub struct OpencodeConfig {
     pub config_dir: PathBuf,
     pub git_binary: String,
     pub model: String,
+    pub askpass_path: PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -99,6 +114,10 @@ impl Config {
         let database_path =
             env_var_path_with_default("FORGEBOT_DATABASE_PATH", "/var/lib/forgebot/forgebot.db");
 
+        // Set askpass path: use env var if set, otherwise use runtime directory
+        let askpass_path =
+            env_var_path_with_default("FORGEBOT_ASKPASS_PATH", "/var/lib/forgebot/git-askpass.sh");
+
         info!("Configuration loaded successfully");
         info!("  FORGEBOT_SERVER_HOST: {}", server_host);
         info!("  FORGEBOT_SERVER_PORT: {}", server_port);
@@ -135,6 +154,7 @@ impl Config {
                 config_dir,
                 git_binary,
                 model: opencode_model,
+                askpass_path,
             },
             database: DatabaseConfig {
                 path: database_path,
@@ -214,6 +234,60 @@ fn env_var_path_with_default(name: &str, default: &str) -> PathBuf {
             PathBuf::from(default)
         }
     }
+}
+
+/// Sets up the git askpass script at the configured path.
+///
+/// This function is called once on startup. It writes the askpass script
+/// which is used for non-interactive git HTTPS authentication.
+///
+/// # Arguments
+/// * `askpass_path` - The path where the script should be written
+///
+/// # Returns
+/// * `Ok(())` on success
+/// * `Err` on permission or I/O errors
+pub fn setup_askpass_script(askpass_path: &PathBuf) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    info!(
+        "Setting up git askpass script at: {}",
+        askpass_path.display()
+    );
+
+    // Create parent directory if it doesn't exist
+    if let Some(parent) = askpass_path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "Failed to create directory for askpass script: {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    // Write the script content
+    std::fs::write(askpass_path, ASKPASS_SCRIPT).with_context(|| {
+        format!(
+            "Failed to write git askpass script at {}",
+            askpass_path.display()
+        )
+    })?;
+
+    // Set executable permissions
+    std::fs::set_permissions(askpass_path, std::fs::Permissions::from_mode(0o700)).with_context(
+        || {
+            format!(
+                "Failed to set executable permissions on {}",
+                askpass_path.display()
+            )
+        },
+    )?;
+
+    info!(
+        "Git askpass script setup complete at: {}",
+        askpass_path.display()
+    );
+    Ok(())
 }
 
 #[cfg(test)]
