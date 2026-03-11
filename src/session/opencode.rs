@@ -662,21 +662,13 @@ async fn get_or_create_session(
         .ok_or_else(|| anyhow!("Failed to retrieve newly created session"))
 }
 
-async fn post_acknowledgement(forgejo: &ForgejoClient, trigger: &SessionTrigger, session_id: &str) {
-    let ack_msg = match trigger.action {
-        SessionAction::Plan => format!(
-            "🤖 forgebot is joining the discussion on this issue.\n\nSession: `{}`",
-            session_id
-        ),
-        SessionAction::Build => format!(
-            "🤖 forgebot is implementing this issue and preparing a PR.\n\nSession: `{}`",
-            session_id
-        ),
-        SessionAction::Revision => format!(
-            "🤖 forgebot is addressing review comments. Revising...\n\nSession: `{}`",
-            session_id
-        ),
-    };
+async fn post_acknowledgement(
+    forgejo: &ForgejoClient,
+    trigger: &SessionTrigger,
+    session_id: &str,
+    session_web_url: Option<&str>,
+) {
+    let ack_msg = build_acknowledgement_message(trigger.action, session_id, session_web_url);
 
     if let Err(e) = forgejo
         .post_issue_comment(&trigger.repo_full_name, trigger.issue_id, &ack_msg)
@@ -689,6 +681,27 @@ async fn post_acknowledgement(forgejo: &ForgejoClient, trigger: &SessionTrigger,
             "Failed to post acknowledgement comment"
         );
     }
+}
+
+fn build_acknowledgement_message(
+    action: SessionAction,
+    session_id: &str,
+    session_web_url: Option<&str>,
+) -> String {
+    let base = match action {
+        SessionAction::Plan => "🤖 forgebot is joining the discussion on this issue.",
+        SessionAction::Build => "🤖 forgebot is implementing this issue and preparing a PR.",
+        SessionAction::Revision => "🤖 forgebot is addressing review comments. Revising...",
+    };
+    let mut ack_msg = format!(
+        "{}\n\nSession: `{}`\n\nWork continues asynchronously.",
+        base, session_id
+    );
+    if let Some(url) = session_web_url {
+        ack_msg.push_str(&format!("\n\n🔗 OpenCode session: [{}]({})", url, url));
+    }
+
+    ack_msg
 }
 
 async fn load_existing_session(db: &DbPool, trigger: &SessionTrigger) -> Result<Option<Session>> {
@@ -1128,13 +1141,12 @@ fn parse_model_input(model: &str) -> Option<PromptModelInput> {
     })
 }
 
-async fn run_opencode_api(
+async fn resolve_opencode_api_session_id(
     config: &Config,
     trigger: &SessionTrigger,
     derived_session_id: &str,
     external_opencode_session_id: Option<&str>,
     worktree_path: &Path,
-    prompt: &str,
 ) -> Result<String> {
     let api_client = OpencodeApiClient::from_config(&config.opencode.api)
         .context("failed to initialize OpenCode API client")?;
@@ -1191,6 +1203,19 @@ async fn run_opencode_api(
         )
     })?;
 
+    Ok(session_id)
+}
+
+async fn run_opencode_api(
+    config: &Config,
+    trigger: &SessionTrigger,
+    worktree_path: &Path,
+    prompt: &str,
+    session_id: &str,
+) -> Result<String> {
+    let api_client = OpencodeApiClient::from_config(&config.opencode.api)
+        .context("failed to initialize OpenCode API client")?;
+
     if parse_model_input(&config.opencode.model).is_none() {
         warn!(
             model = %config.opencode.model,
@@ -1208,7 +1233,7 @@ async fn run_opencode_api(
     };
 
     api_client
-        .prompt_async(worktree_path, &session_id, &prompt_request)
+        .prompt_async(worktree_path, session_id, &prompt_request)
         .await
         .with_context(|| {
             format!(
@@ -1217,7 +1242,7 @@ async fn run_opencode_api(
             )
         })?;
 
-    Ok(session_id)
+    Ok(session_id.to_string())
 }
 
 async fn handle_dispatch_failure(
@@ -1350,19 +1375,83 @@ pub async fn dispatch_session(
     let session_record =
         get_or_create_session(db, &trigger, &session_id, &worktree_path, existing_session).await?;
 
-    // 8. Post acknowledgement comment
-    post_acknowledgement(forgejo, &trigger, &session_id).await;
+    // 8. Resolve API session immediately so acknowledgement can include link.
+    let mut api_session_id: Option<String> = None;
+    let mut ack_session_web_url: Option<String> = None;
+    if config.opencode.transport == OpencodeTransport::Api {
+        let existing_external_id = external_session_id(&session_record);
+        let resolved_session_id = match resolve_opencode_api_session_id(
+            config,
+            &trigger,
+            &session_id,
+            existing_external_id,
+            &worktree_path,
+        )
+        .await
+        {
+            Ok(id) => id,
+            Err(e) => {
+                return handle_dispatch_failure(
+                    db,
+                    forgejo,
+                    &trigger,
+                    &session_id,
+                    &session_record,
+                    e,
+                )
+                .await;
+            }
+        };
 
-    // 9. Update session state
+        if existing_external_id.is_none() {
+            if let Some(web_host) = config.opencode.web_host.as_deref() {
+                ack_session_web_url = Some(opencode_session_web_url(
+                    web_host,
+                    &session_record.worktree_path,
+                    &resolved_session_id,
+                ));
+            }
+
+            if let Err(e) = update_issue_external_opencode_session_id(
+                db,
+                &trigger.repo_full_name,
+                trigger.issue_id as i64,
+                &resolved_session_id,
+            )
+            .await
+            {
+                warn!(
+                    repo = %trigger.repo_full_name,
+                    issue_id = %trigger.issue_id,
+                    opencode_session_id = %resolved_session_id,
+                    err = %e,
+                    "Failed to persist resolved OpenCode API session ID before acknowledgement"
+                );
+            }
+        }
+
+        api_session_id = Some(resolved_session_id);
+    }
+
+    // 9. Post acknowledgement comment
+    post_acknowledgement(
+        forgejo,
+        &trigger,
+        &session_id,
+        ack_session_web_url.as_deref(),
+    )
+    .await;
+
+    // 10. Update session state
     update_session_state(db, &session_record.id, new_state).await?;
 
-    // 10. Determine agent mode
+    // 11. Determine agent mode
     let agent_mode = trigger.action.agent_mode();
 
-    // 11. Set FORGEBOT_* env vars for this session
+    // 12. Set FORGEBOT_* env vars for this session
     let session_env = build_session_env(&trigger, &env_extras);
 
-    // 12. Spawn opencode
+    // 13. Spawn opencode
     let external_session_id = external_session_id(&session_record);
 
     info!(
@@ -1389,22 +1478,40 @@ pub async fn dispatch_session(
             .await,
             true,
         ),
-        OpencodeTransport::Api => (
-            run_opencode_api(
-                config,
-                &trigger,
-                &session_id,
-                external_session_id,
-                &worktree_path,
-                &prompt,
+        OpencodeTransport::Api => {
+            let Some(resolved_session_id) = api_session_id.as_deref() else {
+                let invariant_err = anyhow!(
+                    "OpenCode API session ID was not resolved before prompt dispatch for {} issue {}",
+                    trigger.repo_full_name,
+                    trigger.issue_id
+                );
+                return handle_dispatch_failure(
+                    db,
+                    forgejo,
+                    &trigger,
+                    &session_id,
+                    &session_record,
+                    invariant_err,
+                )
+                .await;
+            };
+
+            (
+                run_opencode_api(
+                    config,
+                    &trigger,
+                    &worktree_path,
+                    &prompt,
+                    resolved_session_id,
+                )
+                .await
+                .map(Some),
+                false,
             )
-            .await
-            .map(Some),
-            false,
-        ),
+        }
     };
 
-    // 13. Handle result
+    // 14. Handle result
     match opencode_result {
         Ok(captured_session_id) => {
             handle_dispatch_success(
@@ -1693,5 +1800,26 @@ mod tests {
             describe_session_status(&status),
             "retry (attempt 4, next in 8s): waiting on tool"
         );
+    }
+
+    #[test]
+    fn test_build_acknowledgement_message_includes_async_notice() {
+        let message = build_acknowledgement_message(SessionAction::Plan, "ses_1_owner_repo", None);
+
+        assert!(message.contains("Session: `ses_1_owner_repo`"));
+        assert!(message.contains("Work continues asynchronously."));
+        assert!(!message.contains("OpenCode session:"));
+    }
+
+    #[test]
+    fn test_build_acknowledgement_message_includes_link_when_present() {
+        let message = build_acknowledgement_message(
+            SessionAction::Build,
+            "ses_2_owner_repo",
+            Some("https://opencode.local/session/oc_123"),
+        );
+
+        assert!(message.contains("OpenCode session:"));
+        assert!(message.contains("https://opencode.local/session/oc_123"));
     }
 }
