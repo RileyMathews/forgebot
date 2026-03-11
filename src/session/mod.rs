@@ -4,6 +4,8 @@ pub mod opencode;
 pub mod repo_cleanup;
 pub mod worktree;
 
+use base64::Engine;
+
 use crate::forgejo::models::{Issue, IssueComment, PullRequestReviewComment};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -241,6 +243,16 @@ pub fn comment_text_no_context() -> String {
         .to_string()
 }
 
+pub fn opencode_session_web_url(
+    web_host: &str,
+    worktree_path: &str,
+    opencode_session_id: &str,
+) -> String {
+    let host = web_host.trim_end_matches('/');
+    let encoded_dir = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(worktree_path);
+    format!("{}/{}/session/{}", host, encoded_dir, opencode_session_id)
+}
+
 /// Derive a deterministic session ID from repository and issue
 ///
 /// Format: `ses_{issue_id}_{sanitized_owner}_{sanitized_repo}`
@@ -326,6 +338,7 @@ Your task:
 4. Suggest a concrete next step the user can take
 
 Do not create commits or open a pull request in this mode.
+
 When the user is ready for implementation, they can trigger @forgebot with --build.
 
 Post your response as a comment on this issue using the comment-issue tool."#,
@@ -679,6 +692,20 @@ mod tests {
         assert_eq!(
             "failed".parse::<CloneStatus>().unwrap(),
             CloneStatus::Failed
+        );
+    }
+
+    #[test]
+    fn test_opencode_session_web_url() {
+        let url = opencode_session_web_url(
+            "http://localhost:4096/",
+            "/var/lib/forgebot/worktrees/_worktrees/alice_repo/42",
+            "oc_abc123",
+        );
+
+        assert_eq!(
+            url,
+            "http://localhost:4096/L3Zhci9saWIvZm9yZ2Vib3Qvd29ya3RyZWVzL193b3JrdHJlZXMvYWxpY2VfcmVwby80Mg/session/oc_abc123"
         );
     }
 }

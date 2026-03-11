@@ -179,6 +179,7 @@ mod tests {
                 config_dir: std::path::PathBuf::from("/tmp/config"),
                 git_binary: "git".to_string(),
                 model: "opencode/kimi-k2.5".to_string(),
+                web_host: None,
             },
             database: crate::config::DatabaseConfig {
                 path: std::path::PathBuf::from("/tmp/test.db"),

@@ -16,7 +16,7 @@ use crate::session::env_loader;
 use crate::session::worktree;
 use crate::session::{
     SESSION_BUSY_STATES, SessionAction, SessionState, SessionTrigger, build_prompt,
-    derive_session_id,
+    derive_session_id, opencode_session_web_url,
 };
 use anyhow::{Context, Result, anyhow, bail};
 use std::collections::HashMap;
@@ -774,6 +774,7 @@ fn external_session_id(session: &Session) -> Option<&str> {
 async fn handle_dispatch_success(
     db: &DbPool,
     forgejo: &ForgejoClient,
+    config: &Config,
     trigger: &SessionTrigger,
     session_id: &str,
     session_record: &Session,
@@ -786,11 +787,41 @@ async fn handle_dispatch_success(
         "Session completed successfully"
     );
 
-    if let Some(new_session_id) = captured_session_id
-        && let Err(e) =
+    let should_post_web_link = session_record.opencode_session_id.starts_with("ses_");
+    let mut effective_session_id = if should_post_web_link {
+        None
+    } else {
+        Some(session_record.opencode_session_id.clone())
+    };
+
+    if let Some(new_session_id) = captured_session_id {
+        if let Err(e) =
             crate::db::update_session_opencode_id(db, &session_record.id, &new_session_id).await
+        {
+            error!("Failed to update session with opencode ID: {}", e);
+        }
+        effective_session_id = Some(new_session_id);
+    }
+
+    if should_post_web_link
+        && let (Some(web_host), Some(opencode_id)) =
+            (&config.opencode.web_host, effective_session_id.as_deref())
     {
-        error!("Failed to update session with opencode ID: {}", e);
+        let web_url =
+            opencode_session_web_url(web_host, &session_record.worktree_path, opencode_id);
+        let web_ui_msg = format!("🔗 Opencode session Web UI: [{}]({})", web_url, web_url);
+        if let Err(e) = forgejo
+            .post_issue_comment(&trigger.repo_full_name, trigger.issue_id, &web_ui_msg)
+            .await
+        {
+            warn!(
+                repo = %trigger.repo_full_name,
+                issue_id = %trigger.issue_id,
+                session_id = %session_record.id,
+                err = %e,
+                "Failed to post session Web UI link"
+            );
+        }
     }
 
     update_session_state(db, &session_record.id, SessionState::Idle).await?;
@@ -964,6 +995,7 @@ pub async fn dispatch_session(
             handle_dispatch_success(
                 db,
                 forgejo,
+                config,
                 &trigger,
                 &session_id,
                 &session_record,
@@ -1090,6 +1122,7 @@ mod tests {
             config_dir: temp_dir.clone(),
             git_binary: "git".to_string(),
             model: "opencode/kimi-k2.5".to_string(),
+            web_host: None,
         };
 
         // First call should create all files
@@ -1134,6 +1167,7 @@ mod tests {
             config_dir: temp_dir.clone(),
             git_binary: "git".to_string(),
             model: "opencode/kimi-k2.5".to_string(),
+            web_host: None,
         };
 
         // Setup should succeed and overwrite managed files

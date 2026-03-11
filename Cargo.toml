@@ -23,6 +23,7 @@ uuid = { version = "1", features = ["v4"] }
 askama = "0.12"
 which = "6"
 futures = "0.3"
+base64 = "0.22"
 
 [dev-dependencies]
 tower = "0.5"

@@ -253,6 +253,18 @@ in
               TCP port for the opencode web server (`opencode serve`).
             '';
           };
+
+          host = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            example = "https://opencode.example.com";
+            description = ''
+              Public base URL for the opencode Web UI.
+              When set, forgebot posts issue comments with direct session links.
+              Format: scheme + host (+ optional port), for example
+              `http://127.0.0.1:4096` or `https://opencode.example.com`.
+            '';
+          };
         };
       };
       default = { };
@@ -448,6 +460,7 @@ in
             "OPENCODE_CONFIG_DIR=${cfg.dataDir}/config/opencode/.opencode"
           ] 
           ++ lib.optional (cfg.server.forgeBotHost != null) "FORGEBOT_FORGEBOT_HOST=${cfg.server.forgeBotHost}"
+          ++ lib.optional (cfg.opencodeWebServer.host != null) "FORGEBOT_OPENCODE_WEB_HOST=${cfg.opencodeWebServer.host}"
           ++ lib.mapAttrsToList (name: value: "${name}=${value}") cfg.environment;
 
           # Load secrets from file if provided

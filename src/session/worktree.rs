@@ -209,6 +209,7 @@ mod tests {
             config_dir: PathBuf::from("/etc/forgebot"),
             git_binary: "git".to_string(),
             model: "opencode/kimi-k2.5".to_string(),
+            web_host: None,
         }
     }
 

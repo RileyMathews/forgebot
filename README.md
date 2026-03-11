@@ -92,6 +92,7 @@ services.forgebot = {
   # Optional - run opencode as a host web service
   opencodeWebServer.enabled = true;
   opencodeWebServer.port = 4096;
+  opencodeWebServer.host = "http://127.0.0.1:4096";  # Used for session Web UI links
   forgejo.url = "https://git.example.com";
   
   # Required - path to secrets file
@@ -172,6 +173,7 @@ All other configuration values use sensible defaults:
 - `FORGEBOT_OPENCODE_WORKTREE_BASE`: `/var/lib/forgebot/worktrees`
 - `FORGEBOT_OPENCODE_CONFIG_DIR`: `/var/lib/forgebot/opencode-config`
 - `FORGEBOT_OPENCODE_MODEL`: `opencode/kimi-k2.5`
+- `FORGEBOT_OPENCODE_WEB_HOST`: *(unset)* (when set, forgebot posts session Web UI links)
 - `FORGEBOT_DATABASE_PATH`: `/var/lib/forgebot/forgebot.db`
 
 **Important**: `FORGEBOT_FORGEBOT_HOST` should be set to your public-facing URL for production deployments (e.g., `https://forgebot.example.com`). If not set, it defaults to `http://<server_host>:<server_port>`, which may not be accessible from the internet if the server is bound to localhost.
@@ -357,6 +359,7 @@ These have sensible defaults if not set:
 | `FORGEBOT_OPENCODE_BINARY` | `opencode` | Path to opencode binary |
 | `FORGEBOT_OPENCODE_WORKTREE_BASE` | `/var/lib/forgebot/worktrees` | Base directory for git worktrees |
 | `FORGEBOT_OPENCODE_CONFIG_DIR` | `/var/lib/forgebot/opencode-config` | Directory for opencode config files |
+| `FORGEBOT_OPENCODE_WEB_HOST` | *(unset)* | Public base URL for opencode Web UI. When set, forgebot comments a direct session link after it captures the opencode session ID. |
 | `FORGEBOT_GIT_BINARY` | `git` | Path to git binary. Set this to an absolute path (e.g., `/usr/bin/git`) if running under systemd or other environments with minimal PATH. |
 | `FORGEBOT_DATABASE_PATH` | `/var/lib/forgebot/forgebot.db` | Path to SQLite database |
 

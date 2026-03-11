@@ -49,6 +49,7 @@ async fn make_test_app() -> Result<(axum::Router, PathBuf)> {
             config_dir: temp_dir.join("config"),
             git_binary: "git".to_string(),
             model: "opencode/kimi-k2.5".to_string(),
+            web_host: None,
         },
         database: DatabaseConfig { path: db_path },
     };

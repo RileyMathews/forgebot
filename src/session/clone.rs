@@ -252,6 +252,7 @@ mod tests {
                 config_dir: PathBuf::from("/tmp/forgebot-test-config"),
                 git_binary: "git".to_string(),
                 model: "opencode/kimi-k2.5".to_string(),
+                web_host: None,
             },
             database: crate::config::DatabaseConfig {
                 path: PathBuf::from("/tmp/forgebot-test.db"),
@@ -290,6 +291,7 @@ mod tests {
                 config_dir: PathBuf::from("/tmp/forgebot-test-config"),
                 git_binary: "git".to_string(),
                 model: "opencode/kimi-k2.5".to_string(),
+                web_host: None,
             },
             database: crate::config::DatabaseConfig {
                 path: PathBuf::from("/tmp/forgebot-test.db"),
@@ -328,6 +330,7 @@ mod tests {
                 config_dir: PathBuf::from("/tmp/forgebot-test-config"),
                 git_binary: "git".to_string(),
                 model: "opencode/kimi-k2.5".to_string(),
+                web_host: None,
             },
             database: crate::config::DatabaseConfig {
                 path: PathBuf::from("/tmp/forgebot-test.db"),

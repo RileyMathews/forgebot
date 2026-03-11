@@ -32,6 +32,7 @@ pub struct OpencodeConfig {
     pub config_dir: PathBuf,
     pub git_binary: String,
     pub model: String,
+    pub web_host: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +48,7 @@ impl Config {
     /// Load configuration entirely from environment variables.
     /// Required env vars (must be set or error): FORGEBOT_WEBHOOK_SECRET, FORGEBOT_FORGEJO_URL, FORGEBOT_FORGEJO_TOKEN
     /// Optional env vars (have defaults): FORGEBOT_SERVER_HOST, FORGEBOT_SERVER_PORT, FORGEBOT_FORGEJO_BOT_USERNAME, FORGEBOT_OPENCODE_BINARY, FORGEBOT_OPENCODE_WORKTREE_BASE, FORGEBOT_OPENCODE_CONFIG_DIR, FORGEBOT_DATABASE_PATH
+    /// Optional env vars (unset by default): FORGEBOT_OPENCODE_WEB_HOST
     pub fn load() -> Result<Self> {
         info!("Loading configuration from environment variables...");
 
@@ -92,6 +94,7 @@ impl Config {
         let opencode_binary = env_var_with_default("FORGEBOT_OPENCODE_BINARY", "opencode");
         let git_binary = env_var_with_default("FORGEBOT_GIT_BINARY", "git");
         let opencode_model = env_var_with_default("FORGEBOT_OPENCODE_MODEL", "opencode/kimi-k2.5");
+        let opencode_web_host = env_var_optional("FORGEBOT_OPENCODE_WEB_HOST");
         let worktree_base = env_var_path_with_default(
             "FORGEBOT_OPENCODE_WORKTREE_BASE",
             "/var/lib/forgebot/worktrees",
@@ -114,6 +117,12 @@ impl Config {
         info!("  FORGEBOT_OPENCODE_BINARY: {}", opencode_binary);
         info!("  FORGEBOT_GIT_BINARY: {}", git_binary);
         info!("  FORGEBOT_OPENCODE_MODEL: {}", opencode_model);
+        match &opencode_web_host {
+            Some(host) => info!("  FORGEBOT_OPENCODE_WEB_HOST: {}", host),
+            None => warn!(
+                "FORGEBOT_OPENCODE_WEB_HOST not set. Session Web UI links will not be posted."
+            ),
+        }
         info!(
             "  FORGEBOT_OPENCODE_WORKTREE_BASE: {}",
             worktree_base.display()
@@ -139,6 +148,7 @@ impl Config {
                 config_dir,
                 git_binary,
                 model: opencode_model,
+                web_host: opencode_web_host,
             },
             database: DatabaseConfig {
                 path: database_path,
@@ -220,6 +230,16 @@ fn env_var_path_with_default(name: &str, default: &str) -> PathBuf {
     }
 }
 
+fn env_var_optional(name: &str) -> Option<String> {
+    match std::env::var(name) {
+        Ok(value) if !value.trim().is_empty() => {
+            info!("Using {} from environment variable: {}", name, value);
+            Some(value)
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -269,6 +289,7 @@ mod tests {
                 config_dir: PathBuf::from("/tmp/config"),
                 git_binary: "git".to_string(),
                 model: "opencode/kimi-k2.5".to_string(),
+                web_host: None,
             },
             database: DatabaseConfig {
                 path: PathBuf::from("/tmp/test.db"),
