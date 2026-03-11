@@ -8,10 +8,10 @@
 //! - Startup crash recovery (stuck "cloning" → "failed")
 
 use forgebot::db::{
-    DbPool, get_repo_by_full_name, init_db_at_path, insert_repo, reset_clone_status_if_failed,
-    update_repo_clone_status, validate_repo_full_name,
+    DbPool, get_repo_by_full_name, init_db_at_path, insert_repo,
+    recover_stuck_clones_after_restart, reset_clone_status_if_failed, update_repo_clone_status,
+    validate_repo_full_name,
 };
-use sqlx::Row;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -588,21 +588,14 @@ async fn test_startup_crash_recovery_resets_stuck_clones() {
         .await
         .expect("Failed to insert repo5");
 
-    // Simulate crash recovery logic from main.rs
-    // Query all repos with "cloning" status
-    let stuck_clones = sqlx::query(r#"SELECT full_name FROM repos WHERE clone_status = 'cloning'"#)
-        .fetch_all(&pool)
+    // Simulate crash recovery logic from main.rs via db helper
+    let recovery = recover_stuck_clones_after_restart(&pool)
         .await
-        .expect("Failed to query stuck clones");
+        .expect("Failed to recover stuck clones");
+    assert_eq!(recovery.recovered_repos.len(), 2);
+    assert!(recovery.failed_repos.is_empty());
 
-    // Reset each to "failed"
     let recovery_msg = "Clone interrupted by service restart";
-    for row in stuck_clones {
-        let full_name: String = row.get("full_name");
-        update_repo_clone_status(&pool, &full_name, "failed", Some(recovery_msg))
-            .await
-            .expect("Failed to reset stuck clone");
-    }
 
     // Assert: Only "cloning" repos are now "failed"
     let repo2 = get_repo_by_full_name(&pool, "bob/repo2")

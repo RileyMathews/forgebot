@@ -39,6 +39,10 @@ pub struct DatabaseConfig {
     pub path: PathBuf,
 }
 
+pub fn webhook_url(config: &Config) -> String {
+    format!("{}/webhook", config.server.forgebot_host)
+}
+
 impl Config {
     /// Load configuration entirely from environment variables.
     /// Required env vars (must be set or error): FORGEBOT_WEBHOOK_SECRET, FORGEBOT_FORGEJO_URL, FORGEBOT_FORGEJO_TOKEN
@@ -243,5 +247,34 @@ mod tests {
         let result =
             env_var_path_with_default("FORGEBOT_TEST_NONEXISTENT_PATH_XYZ123", "/default/path");
         assert_eq!(result, PathBuf::from("/default/path"));
+    }
+
+    #[test]
+    fn test_webhook_url() {
+        let config = Config {
+            server: ServerConfig {
+                host: "127.0.0.1".to_string(),
+                port: 8765,
+                webhook_secret: "secret".to_string(),
+                forgebot_host: "http://example.com".to_string(),
+            },
+            forgejo: ForgejoConfig {
+                url: "https://forgejo.example.com".to_string(),
+                token: "token".to_string(),
+                bot_username: "forgebot".to_string(),
+            },
+            opencode: OpencodeConfig {
+                binary: "opencode".to_string(),
+                worktree_base: PathBuf::from("/tmp/worktrees"),
+                config_dir: PathBuf::from("/tmp/config"),
+                git_binary: "git".to_string(),
+                model: "opencode/kimi-k2.5".to_string(),
+            },
+            database: DatabaseConfig {
+                path: PathBuf::from("/tmp/test.db"),
+            },
+        };
+
+        assert_eq!(webhook_url(&config), "http://example.com/webhook");
     }
 }
