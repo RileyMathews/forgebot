@@ -158,25 +158,11 @@ Test names are substring-matched, so a partial name works.
 - No `#[allow(clippy::...)]` without a comment explaining why
 
 ### Error Handling
+We are moving away from using `anyhow` for error handling and moving towards more tightly controlled
+internal error types. While working in the codebase if you see a use of `anyhow` near the code your working
+in feel free to migrate it to a custom error type.
 
-`anyhow` is used exclusively. There are no custom error types (`thiserror` is not a dependency).
-
-```rust
-// Always return anyhow::Result
-fn do_thing() -> anyhow::Result<()> { ... }
-
-// Add context at every fallible call site
-some_op().context("failed to do the thing")?;
-some_op().with_context(|| format!("failed for {}", id))?;
-
-// Early return
-anyhow::bail!("something went wrong: {}", reason);
-
-// Construct inline
-Err(anyhow::anyhow!("unexpected state: {:?}", state))
-```
-
-HTTP handlers return `Result<Response, axum::response::Response>` — the `Err` variant is itself an HTTP error response, not a Rust error.
+Feel free to use .expect("...") and fail hard when errors are truly unrecoverable cases.
 
 ### Imports
 
