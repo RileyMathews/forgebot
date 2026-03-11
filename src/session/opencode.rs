@@ -23,6 +23,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::process::Command;
 use tracing::{debug, error, info, warn};
@@ -597,49 +598,17 @@ async fn post_acknowledgement(forgejo: &ForgejoClient, trigger: &SessionTrigger,
     }
 }
 
-/// Main session orchestration function.
-///
-/// This is called from webhook handlers to dispatch a new session.
-/// It handles the full lifecycle: loading env, building prompt,
-/// spawning opencode, and updating state.
-///
-/// This function runs in a spawned task, so it can block without
-/// holding up the webhook response.
-///
-/// # Arguments
-/// * `db` - Database connection pool
-/// * `forgejo` - Forgejo API client
-/// * `config` - Forgebot configuration
-/// * `trigger` - The session trigger event
-pub async fn dispatch_session(
-    db: &DbPool,
+async fn load_existing_session(db: &DbPool, trigger: &SessionTrigger) -> Result<Option<Session>> {
+    crate::db::get_session_by_issue(db, &trigger.repo_full_name, trigger.issue_id as i64).await
+}
+
+async fn reject_if_session_busy(
     forgejo: &ForgejoClient,
-    config: &Config,
-    trigger: SessionTrigger,
+    trigger: &SessionTrigger,
+    session_id: &str,
+    existing_session: &Option<Session>,
 ) -> Result<()> {
-    let session_id = derive_session_id(&trigger.repo_full_name, trigger.issue_id);
-
-    info!(
-        session_id = %session_id,
-        agent_mode = %trigger.action.as_str(),
-        repo = %trigger.repo_full_name,
-        issue_id = %trigger.issue_id,
-        "Dispatching session"
-    );
-
-    // 1. Fetch issue context from Forgejo
-    let issue_context = fetch_issue_context(forgejo, &trigger).await?;
-
-    // 4. Check if session already exists
-    let existing_session =
-        crate::db::get_session_by_issue(db, &trigger.repo_full_name, trigger.issue_id as i64)
-            .await?;
-
-    // 5. Determine state and check if busy
-    let new_state = trigger.action.state();
-
-    // If session exists and is busy, reject
-    if let Some(ref session) = existing_session
+    if let Some(session) = existing_session
         && session.state.is_busy()
     {
         info!(
@@ -668,29 +637,28 @@ pub async fn dispatch_session(
         bail!("session {} is busy in state {}", session.id, session.state);
     }
 
-    // 6. Build prompt
-    let prompt = build_prompt(
-        trigger.action,
-        &issue_context.issue,
-        &issue_context.issue_comments,
-        &issue_context.pr_review_comments,
-        trigger.pr_id,
-    );
+    Ok(())
+}
 
-    // 7. Look up repository metadata and get/create worktree
-    let repo_record = crate::db::get_repo_by_full_name(db, &trigger.repo_full_name)
+async fn lookup_repo_record(db: &DbPool, trigger: &SessionTrigger) -> Result<crate::db::Repo> {
+    crate::db::get_repo_by_full_name(db, &trigger.repo_full_name)
         .await?
         .ok_or_else(|| {
             anyhow!(
                 "Repository {} not found in database",
                 trigger.repo_full_name
             )
-        })?;
+        })
+}
 
+async fn ensure_session_worktree(
+    config: &Config,
+    trigger: &SessionTrigger,
+    default_branch: &str,
+) -> Result<PathBuf> {
     let worktree_path =
         worktree::worktree_path(&config.opencode, &trigger.repo_full_name, trigger.issue_id);
 
-    // If worktree doesn't exist, create it from the bare clone.
     if !worktree_path.exists() {
         info!(
             repo = %trigger.repo_full_name,
@@ -702,7 +670,7 @@ pub async fn dispatch_session(
             &config.opencode,
             &trigger.repo_full_name,
             trigger.issue_id,
-            &repo_record.default_branch,
+            default_branch,
         )
         .await
         .with_context(|| {
@@ -713,16 +681,27 @@ pub async fn dispatch_session(
         })?;
     }
 
-    // 8. Load environment in the worktree using the repository's configured loader.
-    let env_extras = match env_loader::load_env(&repo_record.env_loader, &worktree_path).await {
-        Ok(env) => env,
+    Ok(worktree_path)
+}
+
+async fn load_env_or_fail(
+    db: &DbPool,
+    forgejo: &ForgejoClient,
+    trigger: &SessionTrigger,
+    session_id: &str,
+    env_loader_name: &str,
+    worktree_path: &Path,
+    existing_session: &Option<Session>,
+) -> Result<HashMap<String, String>> {
+    match env_loader::load_env(env_loader_name, worktree_path).await {
+        Ok(env) => Ok(env),
         Err(e) => {
             let error_str = e.to_string();
             error!(
                 session_id = %session_id,
                 repo = %trigger.repo_full_name,
                 issue_id = %trigger.issue_id,
-                env_loader = %repo_record.env_loader,
+                env_loader = %env_loader_name,
                 worktree_path = %worktree_path.display(),
                 err = %error_str,
                 "Environment loading failed"
@@ -735,7 +714,7 @@ pub async fn dispatch_session(
                         "❌ forgebot: env loader '{}' failed and the session cannot continue. \
 Fix the loader configuration and re-trigger when ready. \
 Error output: {}",
-                        repo_record.env_loader, error_str
+                        env_loader_name, error_str
                     ),
                 )
                 .await
@@ -749,8 +728,7 @@ Error output: {}",
                 );
             }
 
-            // Set state to error if session exists
-            if let Some(ref session) = existing_session
+            if let Some(session) = existing_session
                 && let Err(update_err) =
                     update_session_state(db, &session.id, SessionState::Error).await
             {
@@ -767,22 +745,13 @@ Error output: {}",
                 error_str
             );
         }
-    };
+    }
+}
 
-    // 9. Get or create session record
-    let session_record =
-        get_or_create_session(db, &trigger, &session_id, &worktree_path, existing_session).await?;
-
-    // 10. Post acknowledgement comment
-    post_acknowledgement(forgejo, &trigger, &session_id).await;
-
-    // 11. Update session state
-    update_session_state(db, &session_record.id, new_state).await?;
-
-    // 12. Determine agent mode
-    let agent_mode = trigger.action.agent_mode();
-
-    // 13. Set FORGEBOT_* env vars for this session
+fn build_session_env(
+    trigger: &SessionTrigger,
+    env_extras: &HashMap<String, String>,
+) -> HashMap<String, String> {
     let mut session_env = env_extras.clone();
     session_env.insert(
         "FORGEBOT_ISSUE_ID".to_string(),
@@ -791,16 +760,182 @@ Error output: {}",
     if let Some(pr_id) = trigger.pr_id {
         session_env.insert("FORGEBOT_PR_ID".to_string(), pr_id.to_string());
     }
+    session_env
+}
 
-    // 14. Spawn opencode
-    // Check if we already have an external opencode session ID stored
-    let external_session_id = if session_record.opencode_session_id.starts_with("ses_") {
-        // This is our derived ID, not the real opencode ID
+fn external_session_id(session: &Session) -> Option<&str> {
+    if session.opencode_session_id.starts_with("ses_") {
         None
     } else {
-        // This looks like a real opencode session ID
-        Some(session_record.opencode_session_id.as_str())
+        Some(session.opencode_session_id.as_str())
+    }
+}
+
+async fn handle_dispatch_success(
+    db: &DbPool,
+    forgejo: &ForgejoClient,
+    trigger: &SessionTrigger,
+    session_id: &str,
+    session_record: &Session,
+    captured_session_id: Option<String>,
+) -> Result<()> {
+    info!(
+        session_id = %session_id,
+        exit_code = 0,
+        captured_session_id = ?captured_session_id,
+        "Session completed successfully"
+    );
+
+    if let Some(new_session_id) = captured_session_id
+        && let Err(e) =
+            crate::db::update_session_opencode_id(db, &session_record.id, &new_session_id).await
+    {
+        error!("Failed to update session with opencode ID: {}", e);
+    }
+
+    update_session_state(db, &session_record.id, SessionState::Idle).await?;
+
+    let success_msg = match trigger.action {
+        SessionAction::Plan => {
+            "✅ Collaboration update posted. Add `--build` in a @forgebot comment when you're ready for implementation and PR creation."
+        }
+        SessionAction::Build => "✅ Implementation complete! A pull request has been created.",
+        SessionAction::Revision => "✅ Review comments addressed and changes pushed.",
     };
+    if let Err(e) = forgejo
+        .post_issue_comment(&trigger.repo_full_name, trigger.issue_id, success_msg)
+        .await
+    {
+        warn!(
+            repo = %trigger.repo_full_name,
+            issue_id = %trigger.issue_id,
+            session_id = %session_record.id,
+            err = %e,
+            "Failed to post success comment"
+        );
+    }
+
+    Ok(())
+}
+
+async fn handle_dispatch_failure(
+    db: &DbPool,
+    forgejo: &ForgejoClient,
+    trigger: &SessionTrigger,
+    session_id: &str,
+    session_record: &Session,
+    error: anyhow::Error,
+) -> Result<()> {
+    let error_str = error.to_string();
+    error!(
+        session_id = %session_id,
+        error = %error_str,
+        "Session failed"
+    );
+    update_session_state(db, &session_record.id, SessionState::Error).await?;
+
+    let error_msg = format!(
+        "❌ Task failed. Error: {}\n\nSession set to error state. Please re-trigger when ready.",
+        error_str
+    );
+    if let Err(post_err) = forgejo
+        .post_issue_comment(&trigger.repo_full_name, trigger.issue_id, &error_msg)
+        .await
+    {
+        warn!(
+            repo = %trigger.repo_full_name,
+            issue_id = %trigger.issue_id,
+            session_id = %session_record.id,
+            err = %post_err,
+            "Failed to post failure comment"
+        );
+    }
+
+    Err(error)
+}
+
+/// Main session orchestration function.
+///
+/// This is called from webhook handlers to dispatch a new session.
+/// It handles the full lifecycle: loading env, building prompt,
+/// spawning opencode, and updating state.
+///
+/// This function runs in a spawned task, so it can block without
+/// holding up the webhook response.
+///
+/// # Arguments
+/// * `db` - Database connection pool
+/// * `forgejo` - Forgejo API client
+/// * `config` - Forgebot configuration
+/// * `trigger` - The session trigger event
+pub async fn dispatch_session(
+    db: &DbPool,
+    forgejo: &ForgejoClient,
+    config: &Config,
+    trigger: SessionTrigger,
+) -> Result<()> {
+    let session_id = derive_session_id(&trigger.repo_full_name, trigger.issue_id);
+    let new_state = trigger.action.state();
+
+    info!(
+        session_id = %session_id,
+        agent_mode = %trigger.action.as_str(),
+        repo = %trigger.repo_full_name,
+        issue_id = %trigger.issue_id,
+        "Dispatching session"
+    );
+
+    // 1. Fetch issue context from Forgejo
+    let issue_context = fetch_issue_context(forgejo, &trigger).await?;
+
+    // 2. Check if session already exists and reject if busy
+    let existing_session = load_existing_session(db, &trigger).await?;
+    reject_if_session_busy(forgejo, &trigger, &session_id, &existing_session).await?;
+
+    // 3. Build prompt
+    let prompt = build_prompt(
+        trigger.action,
+        &issue_context.issue,
+        &issue_context.issue_comments,
+        &issue_context.pr_review_comments,
+        trigger.pr_id,
+    );
+
+    // 4. Look up repository metadata and ensure worktree exists
+    let repo_record = lookup_repo_record(db, &trigger).await?;
+    let worktree_path =
+        ensure_session_worktree(config, &trigger, &repo_record.default_branch).await?;
+
+    // 5. Load environment in the worktree using the repository's configured loader.
+    let env_extras = load_env_or_fail(
+        db,
+        forgejo,
+        &trigger,
+        &session_id,
+        &repo_record.env_loader,
+        &worktree_path,
+        &existing_session,
+    )
+    .await?;
+
+    // 6. Get or create session record
+    let session_record =
+        get_or_create_session(db, &trigger, &session_id, &worktree_path, existing_session).await?;
+
+    // 7. Post acknowledgement comment
+    post_acknowledgement(forgejo, &trigger, &session_id).await;
+
+    // 8. Update session state
+    update_session_state(db, &session_record.id, new_state).await?;
+
+    // 9. Determine agent mode
+    let agent_mode = trigger.action.agent_mode();
+
+    // 10. Set FORGEBOT_* env vars for this session
+    let session_env = build_session_env(&trigger, &env_extras);
+
+    // 11. Spawn opencode
+    let external_session_id = external_session_id(&session_record);
 
     info!(
         session_id = %session_id,
@@ -823,79 +958,21 @@ Error output: {}",
     })
     .await;
 
-    // 15. Handle result
+    // 12. Handle result
     match opencode_result {
         Ok(captured_session_id) => {
-            info!(
-                session_id = %session_id,
-                exit_code = 0,
-                captured_session_id = ?captured_session_id,
-                "Session completed successfully"
-            );
-
-            // If we captured a new opencode session ID, update the database
-            if let Some(new_session_id) = captured_session_id
-                && let Err(e) =
-                    crate::db::update_session_opencode_id(db, &session_record.id, &new_session_id)
-                        .await
-            {
-                error!("Failed to update session with opencode ID: {}", e);
-                // Don't fail the entire operation for this
-            }
-
-            update_session_state(db, &session_record.id, SessionState::Idle).await?;
-
-            let success_msg = match trigger.action {
-                SessionAction::Plan => {
-                    "✅ Collaboration update posted. Add `--build` in a @forgebot comment when you're ready for implementation and PR creation."
-                }
-                SessionAction::Build => {
-                    "✅ Implementation complete! A pull request has been created."
-                }
-                SessionAction::Revision => "✅ Review comments addressed and changes pushed.",
-            };
-            if let Err(e) = forgejo
-                .post_issue_comment(&trigger.repo_full_name, trigger.issue_id, success_msg)
-                .await
-            {
-                warn!(
-                    repo = %trigger.repo_full_name,
-                    issue_id = %trigger.issue_id,
-                    session_id = %session_record.id,
-                    err = %e,
-                    "Failed to post success comment"
-                );
-            }
-
-            Ok(())
+            handle_dispatch_success(
+                db,
+                forgejo,
+                &trigger,
+                &session_id,
+                &session_record,
+                captured_session_id,
+            )
+            .await
         }
         Err(e) => {
-            let error_str = e.to_string();
-            error!(
-                session_id = %session_id,
-                error = %error_str,
-                "Session failed"
-            );
-            update_session_state(db, &session_record.id, SessionState::Error).await?;
-
-            let error_msg = format!(
-                "❌ Task failed. Error: {}\n\nSession set to error state. Please re-trigger when ready.",
-                error_str
-            );
-            if let Err(post_err) = forgejo
-                .post_issue_comment(&trigger.repo_full_name, trigger.issue_id, &error_msg)
-                .await
-            {
-                warn!(
-                    repo = %trigger.repo_full_name,
-                    issue_id = %trigger.issue_id,
-                    session_id = %session_record.id,
-                    err = %post_err,
-                    "Failed to post failure comment"
-                );
-            }
-
-            Err(e)
+            handle_dispatch_failure(db, forgejo, &trigger, &session_id, &session_record, e).await
         }
     }
 }
