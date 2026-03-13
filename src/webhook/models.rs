@@ -42,6 +42,14 @@ pub struct IssueWebhook {
     pub title: String,
     pub body: Option<String>,
     pub state: String,
+    pub pull_request: Option<PullRequestMarker>,
+}
+
+/// Marker included by Forgejo when an issue_comment belongs to a pull request timeline
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct PullRequestMarker {
+    pub url: String,
 }
 
 /// Pull request object in webhook payloads

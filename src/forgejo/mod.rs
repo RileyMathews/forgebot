@@ -7,6 +7,15 @@ use tracing::{debug, error};
 
 use models::*;
 
+fn webhook_events() -> Vec<String> {
+    vec![
+        "issues".to_string(),
+        "issue_comment".to_string(),
+        "pull_request".to_string(),
+        "pull_request_review_comment".to_string(),
+    ]
+}
+
 /// HTTP client for the Forgejo API
 #[derive(Debug, Clone)]
 pub struct ForgejoClient {
@@ -278,11 +287,7 @@ impl ForgejoClient {
                 content_type: "json".to_string(),
                 secret: secret.to_string(),
             },
-            events: vec![
-                "issues".to_string(),
-                "issue_comment".to_string(),
-                "pull_request".to_string(),
-            ],
+            events: webhook_events(),
             active: true,
         };
 
@@ -352,5 +357,21 @@ impl ForgejoClient {
     /// Get the base URL
     pub fn base_url(&self) -> &str {
         &self.base_url
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_webhook_events_include_review_comment() {
+        let events = webhook_events();
+        assert!(
+            events
+                .iter()
+                .any(|event| event == "pull_request_review_comment"),
+            "webhook events should include pull_request_review_comment"
+        );
     }
 }
