@@ -3,7 +3,7 @@ version: "1.0"
 processes:
   prepare-runtime:
     description: Prepare isolated local runtime directories
-    command: "bash -lc 'set -euo pipefail; runtime_root=\"$HOME/.local/state/forgebot-local-dev\"; host_xdg_data_home=\"${XDG_DATA_HOME:-$HOME/.local/share}\"; host_auth=\"$host_xdg_data_home/opencode/auth.json\"; runtime_xdg_data=\"$runtime_root/xdg/data\"; runtime_xdg_config=\"$runtime_root/xdg/config\"; runtime_xdg_cache=\"$runtime_root/xdg/cache\"; mkdir -p \"$runtime_root/worktrees\" \"$runtime_root/opencode-config\" \"$runtime_xdg_data/opencode\" \"$runtime_xdg_config/opencode\" \"$runtime_xdg_cache/bun\"; cp -R opencode-config/. \"$runtime_root/opencode-config/\"; if [ ! -f \"$host_auth\" ]; then echo \"Missing opencode auth at $host_auth\"; echo \"Log into opencode once on host, then retry.\"; exit 1; fi; install -m 600 \"$host_auth\" \"$runtime_xdg_data/opencode/auth.json\"'"
+    command: "bash -lc 'set -euo pipefail; runtime_root=\"$HOME/.local/state/forgebot-local-dev\"; runtime_xdg_data=\"$runtime_root/xdg/data\"; runtime_xdg_config=\"$runtime_root/xdg/config\"; runtime_xdg_cache=\"$runtime_root/xdg/cache\"; mkdir -p \"$runtime_root/worktrees\" \"$runtime_root/opencode-config\" \"$runtime_xdg_data/opencode\" \"$runtime_xdg_config/opencode\" \"$runtime_xdg_cache/bun\"; cp -R opencode-config/. \"$runtime_root/opencode-config/\"'"
     availability:
       restart: "exit_on_failure"
 
@@ -17,7 +17,7 @@ processes:
 
   opencode-serve:
     description: Run local opencode API server
-    command: "bash -lc 'set -euo pipefail; runtime_root=\"$HOME/.local/state/forgebot-local-dev\"; export XDG_DATA_HOME=\"$runtime_root/xdg/data\"; export XDG_CONFIG_HOME=\"$runtime_root/xdg/config\"; export XDG_CACHE_HOME=\"$runtime_root/xdg/cache\"; export BUN_INSTALL_CACHE_DIR=\"$runtime_root/xdg/cache/bun\"; export OPENCODE_CONFIG_DIR=\"$runtime_root/opencode-config\"; opencode serve --hostname 127.0.0.1 --port 4096'"
+    command: "bash -lc 'set -euo pipefail; runtime_root=\"$HOME/.local/state/forgebot-local-dev\"; export HOME=\"$runtime_root\"; export XDG_DATA_HOME=\"$runtime_root/xdg/data\"; export XDG_CONFIG_HOME=\"$runtime_root/xdg/config\"; export XDG_CACHE_HOME=\"$runtime_root/xdg/cache\"; export BUN_INSTALL_CACHE_DIR=\"$runtime_root/xdg/cache/bun\"; export OPENCODE_CONFIG_DIR=\"$runtime_root/opencode-config\"; opencode serve --hostname 127.0.0.1 --port 4096'"
     depends_on:
       prepare-runtime:
         condition: process_completed_successfully
@@ -26,7 +26,7 @@ processes:
 
   run:
     description: Run the forgebot application
-    command: "bash -lc 'set -euo pipefail; runtime_root=\"$HOME/.local/state/forgebot-local-dev\"; export FORGEBOT_SERVER_HOST=\"0.0.0.0\"; export FORGEBOT_OPENCODE_API_BASE_URL=\"http://127.0.0.1:4096\"; export FORGEBOT_OPENCODE_WEB_HOST=\"http://127.0.0.1:4096\"; export FORGEBOT_OPENCODE_WORKTREE_BASE=\"$runtime_root/worktrees\"; export FORGEBOT_OPENCODE_CONFIG_DIR=\"$runtime_root/opencode-config\"; export FORGEBOT_DATABASE_PATH=\"$runtime_root/forgebot.db\"; export XDG_DATA_HOME=\"$runtime_root/xdg/data\"; export XDG_CONFIG_HOME=\"$runtime_root/xdg/config\"; export XDG_CACHE_HOME=\"$runtime_root/xdg/cache\"; export BUN_INSTALL_CACHE_DIR=\"$runtime_root/xdg/cache/bun\"; export OPENCODE_CONFIG_DIR=\"$runtime_root/opencode-config\"; cargo run'"
+    command: "bash -lc 'set -euo pipefail; runtime_root=\"$HOME/.local/state/forgebot-local-dev\"; export HOME=\"$runtime_root\"; export FORGEBOT_SERVER_HOST=\"0.0.0.0\"; export FORGEBOT_OPENCODE_API_BASE_URL=\"http://127.0.0.1:4096\"; export FORGEBOT_OPENCODE_WEB_HOST=\"http://127.0.0.1:4096\"; export FORGEBOT_OPENCODE_WORKTREE_BASE=\"$runtime_root/worktrees\"; export FORGEBOT_OPENCODE_CONFIG_DIR=\"$runtime_root/opencode-config\"; export FORGEBOT_ASKPASS_PATH=\"$runtime_root/git-askpass.sh\"; export FORGEBOT_DATABASE_PATH=\"$runtime_root/forgebot.db\"; export XDG_DATA_HOME=\"$runtime_root/xdg/data\"; export XDG_CONFIG_HOME=\"$runtime_root/xdg/config\"; export XDG_CACHE_HOME=\"$runtime_root/xdg/cache\"; export BUN_INSTALL_CACHE_DIR=\"$runtime_root/xdg/cache/bun\"; export OPENCODE_CONFIG_DIR=\"$runtime_root/opencode-config\"; cargo run'"
     depends_on:
       prepare-runtime:
         condition: process_completed_successfully

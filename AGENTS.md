@@ -76,6 +76,8 @@ PY
 
 Use this flow to validate the full webhook-to-agent pipeline on local dev.
 
+For agent-driven runs, execute these steps directly with commands/tool calls. Do not use `scripts/e2e_smoke_manual.py`, which is designed for human/manual checkpoints.
+
 1. Start from a clean state using the hygiene steps above.
 2. Add test repo in the UI (or via HTTP form):
 

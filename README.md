@@ -111,20 +111,9 @@ FORGEBOT_WEBHOOK_SECRET=your-webhook-secret-here
 FORGEBOT_FORGEJO_TOKEN=your-forgejo-api-token
 ```
 
-### 2.1 Configure Opencode Credentials
+### 2.1 Authenticate OpenCode via Web UI
 
-forgebot requires credentials to authenticate with opencode's AI providers. Currently, **OpenCode Zen** is the supported provider.
-
-**Create the credentials JSON file** (e.g., `/run/secrets/forgebot-opencode-credentials`):
-
-```json
-{
-  "opencode": {
-    "type": "api",
-    "key": "sk-your-opencode-zen-api-key-here"
-  }
-}
-```
+forgebot no longer requires an `auth.json` bootstrap file. OpenCode authentication is handled directly in the OpenCode Web UI.
 
 To obtain your OpenCode Zen API key:
 1. Visit [OpenCode Zen](https://zen.opencode.ai) and sign up/login
@@ -132,7 +121,7 @@ To obtain your OpenCode Zen API key:
 3. Generate an API key from your dashboard
 4. Copy the key (starts with `sk-`)
 
-**Update your NixOS configuration** to use the credentials file:
+**Update your NixOS configuration** (no credentials file option needed):
 
 ```nix
 { config, forgebot, ... }:
@@ -142,16 +131,11 @@ To obtain your OpenCode Zen API key:
   ];
   
   sops.secrets.forgebot = { };
-  sops.secrets.forgebot-opencode-credentials = { };
-  
   services.forgebot = {
     enable = true;
     forgejo.url = "https://git.example.com";
     secretsFilePath = config.sops.secrets.forgebot.path;
-    
-    # REQUIRED: Path to opencode credentials JSON file
-    opencode.credentialsFile = config.sops.secrets.forgebot-opencode-credentials.path;
-    
+
     # OPTIONAL: Choose a different model (default is opencode/kimi-k2.5)
     # opencode.model = "opencode/claude-sonnet-4-5";  # Better quality, higher cost
     # opencode.model = "opencode/claude-opus-4-6";  # Best quality, most expensive
@@ -160,7 +144,7 @@ To obtain your OpenCode Zen API key:
 }
 ```
 
-**Important**: The credentials file must be in valid JSON format matching opencode's `auth.json` structure. The service will fail to start if the file is missing or invalid.
+After deployment, open the OpenCode Web UI and sign in there.
 
 **Available models** (run `opencode models` to see all):
 - `opencode/kimi-k2.5` (default) - Fast, cost-effective
@@ -482,7 +466,7 @@ Use `process-compose` for local E2E runs. It prepares an isolated runtime under 
 process-compose up -D
 ```
 
-The runtime setup step copies host opencode auth from `${XDG_DATA_HOME:-$HOME/.local/share}/opencode/auth.json` into the sandbox. This keeps local forgebot runs isolated from your normal opencode config and cache while still reusing your existing login.
+The runtime setup creates isolated XDG directories for OpenCode state and sets `HOME` to the runtime root so embedded OpenCode does not read your host config.
 
 The local stack starts both `forgebot` and `opencode serve` so API transport smoke tests run with production-like routing.
 

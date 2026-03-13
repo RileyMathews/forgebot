@@ -16,6 +16,9 @@ async fn main() -> () {
     // Load configuration from environment variables
     let config = config::Config::load().expect("Failed to load configuration");
 
+    let askpass_path = config::askpass_script_path();
+    config::setup_askpass_script(&askpass_path).expect("Failed to set up git askpass script");
+
     // Set up opencode config directory
     session::opencode::setup_opencode_config_dir(&config.opencode)
         .expect("Failed to set up opencode config directory");
@@ -28,6 +31,7 @@ async fn main() -> () {
     info!(
         config_dir = %config.opencode.config_dir.display(),
         worktree_base = %config.opencode.worktree_base.display(),
+        askpass_path = %askpass_path.display(),
         "Opencode config and worktree directories initialized"
     );
 

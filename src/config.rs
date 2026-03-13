@@ -1,8 +1,21 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use reqwest::Url;
 use tracing::{info, warn};
+
+const DEFAULT_ASKPASS_PATH: &str = "/var/lib/forgebot/git-askpass.sh";
+const ASKPASS_SCRIPT: &str = r#"#!/bin/sh
+prompt="$1"
+case "$prompt" in
+  *Username*|*username*)
+    printf '%s\n' "${FORGEBOT_FORGEJO_BOT_USERNAME:-forgebot}"
+    ;;
+  *)
+    printf '%s\n' "${FORGEBOT_FORGEJO_TOKEN:-}"
+    ;;
+esac
+"#;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -317,6 +330,44 @@ fn env_var_optional(name: &str) -> Option<String> {
     }
 }
 
+pub fn resolve_askpass_path(raw_value: Option<String>) -> PathBuf {
+    match raw_value {
+        Some(path) if !path.trim().is_empty() => PathBuf::from(path),
+        _ => PathBuf::from(DEFAULT_ASKPASS_PATH),
+    }
+}
+
+pub fn askpass_script_path() -> PathBuf {
+    resolve_askpass_path(std::env::var("FORGEBOT_ASKPASS_PATH").ok())
+}
+
+pub fn setup_askpass_script(script_path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    if let Some(parent) = script_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create askpass dir at {}", parent.display()))?;
+    }
+
+    std::fs::write(script_path, ASKPASS_SCRIPT).with_context(|| {
+        format!(
+            "Failed to write git askpass script at {}",
+            script_path.display()
+        )
+    })?;
+
+    std::fs::set_permissions(script_path, std::fs::Permissions::from_mode(0o700)).with_context(
+        || {
+            format!(
+                "Failed to set executable permissions on {}",
+                script_path.display()
+            )
+        },
+    )?;
+
+    Ok(())
+}
+
 fn validate_http_url(var_name: &str, value: &str) -> Result<String> {
     let trimmed = value.trim();
     let parsed = Url::parse(trimmed)
@@ -336,6 +387,7 @@ fn validate_http_url(var_name: &str, value: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn test_env_var_with_default_uses_env_when_set() {
@@ -403,5 +455,37 @@ mod tests {
         };
 
         assert_eq!(webhook_url(&config), "http://example.com/webhook");
+    }
+
+    #[test]
+    fn test_resolve_askpass_path_default() {
+        assert_eq!(
+            resolve_askpass_path(None),
+            PathBuf::from("/var/lib/forgebot/git-askpass.sh")
+        );
+    }
+
+    #[test]
+    fn test_resolve_askpass_path_custom() {
+        assert_eq!(
+            resolve_askpass_path(Some("/tmp/custom-askpass.sh".to_string())),
+            PathBuf::from("/tmp/custom-askpass.sh")
+        );
+    }
+
+    #[test]
+    fn test_setup_askpass_script_writes_expected_content() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("forgebot-askpass-test-{}", std::process::id()));
+        let script_path = temp_dir.join("git-askpass.sh");
+        let _ = fs::remove_dir_all(&temp_dir);
+
+        setup_askpass_script(&script_path).expect("script setup should succeed");
+
+        let content = fs::read_to_string(&script_path).expect("script should be readable");
+        assert!(content.contains("FORGEBOT_FORGEJO_TOKEN"));
+        assert!(content.contains("FORGEBOT_FORGEJO_BOT_USERNAME"));
+
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 }

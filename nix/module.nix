@@ -220,27 +220,6 @@ in
             '';
           };
 
-          credentialsFile = lib.mkOption {
-            type = lib.types.path;
-            example = lib.literalExpression "/run/secrets/forgebot-opencode-credentials";
-            description = ''
-              Path to a JSON file containing opencode authentication credentials.
-              This file must be in the format of opencode's auth.json file.
-              
-              For OpenCode Zen (the default), the file should contain:
-              {
-                "opencode": {
-                  "type": "api",
-                  "key": "sk-your-api-key-here"
-                }
-              }
-              
-              For sops-nix integration, use:
-                credentialsFile = config.sops.secrets.forgebot-opencode-credentials.path;
-              
-              Note: This file is required and the service will fail to start if not present.
-            '';
-          };
         };
       };
       default = { };
@@ -349,13 +328,6 @@ in
         requires = [ "forgebot-opencode-web.service" ];
 
         preStart = ''
-          # Validate credentials file exists
-          if [ ! -f "${cfg.opencode.credentialsFile}" ]; then
-            echo "ERROR: Opencode credentials file not found: ${cfg.opencode.credentialsFile}"
-            echo "The credentialsFile option must point to a valid JSON file containing opencode auth credentials."
-            exit 1
-          fi
-
           # Create XDG directories for opencode
           mkdir -p ${cfg.dataDir}/data/opencode
           mkdir -p ${cfg.dataDir}/config/opencode
@@ -363,12 +335,6 @@ in
           mkdir -p ${cfg.dataDir}/cache/bun
           chmod 755 ${cfg.dataDir}/data ${cfg.dataDir}/config
           chmod 755 ${cfg.dataDir}/data/opencode ${cfg.dataDir}/config/opencode ${cfg.dataDir}/cache ${cfg.dataDir}/cache/bun
-
-          # Copy credentials file to auth.json with proper permissions
-          # auth.json MUST be at $XDG_DATA_HOME/opencode/auth.json
-          cp "${cfg.opencode.credentialsFile}" ${cfg.dataDir}/data/opencode/auth.json
-          chmod 600 ${cfg.dataDir}/data/opencode/auth.json
-          chown ${cfg.user}:${cfg.group} ${cfg.dataDir}/data/opencode/auth.json
 
           # Generate opencode.json with model selection in the config directory
           cat > ${cfg.dataDir}/config/opencode/opencode.json <<EOF
@@ -390,7 +356,6 @@ in
 
           echo "Opencode configuration generated:"
           echo "  - Model: ${cfg.opencode.model}"
-          echo "  - Auth file: ${cfg.dataDir}/data/opencode/auth.json (via XDG_DATA_HOME)"
           echo "  - Config file: ${cfg.dataDir}/config/opencode/opencode.json (via XDG_CONFIG_HOME)"
           echo "  - Custom config: ${cfg.dataDir}/config/opencode/.opencode (via OPENCODE_CONFIG_DIR)"
         '';
@@ -459,7 +424,7 @@ in
             "GIT_AUTHOR_EMAIL=forgebot@localhost"
             "GIT_COMMITTER_NAME=forgebot"
             "GIT_COMMITTER_EMAIL=forgebot@localhost"
-            # XDG directories for opencode (auth.json goes to $XDG_DATA_HOME/opencode/auth.json)
+            # XDG directories for opencode state
             "XDG_DATA_HOME=${cfg.dataDir}/data"
             "XDG_CONFIG_HOME=${cfg.dataDir}/config"
             "XDG_CACHE_HOME=${cfg.dataDir}/cache"

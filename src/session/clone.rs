@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
+use std::{collections::HashMap, path::Path};
 
 use anyhow::{Context, Result};
 use tokio::process::Command;
@@ -20,6 +21,16 @@ pub fn build_clone_url(forgejo_url: &str, repo_full_name: &str) -> String {
     } else {
         format!("https://{}/{}.git", trimmed_url, repo_full_name)
     }
+}
+
+fn build_clone_auth_env(askpass_path: &Path) -> HashMap<String, String> {
+    HashMap::from([
+        ("GIT_TERMINAL_PROMPT".to_string(), "0".to_string()),
+        (
+            "GIT_ASKPASS".to_string(),
+            askpass_path.display().to_string(),
+        ),
+    ])
 }
 
 /// Perform a bare clone of a repository.
@@ -126,16 +137,16 @@ pub async fn perform_clone(db: &DbPool, config: &Arc<Config>, repo_full_name: &s
         "Executing git clone --bare"
     );
 
-    let clone_result = tokio::time::timeout(
-        CLONE_TIMEOUT,
-        Command::new(&config.opencode.git_binary)
-            .arg("clone")
-            .arg("--bare")
-            .arg(&clone_url)
-            .arg(&bare_path)
-            .output(),
-    )
-    .await;
+    let askpass_path = crate::config::askpass_script_path();
+    let mut clone_command = Command::new(&config.opencode.git_binary);
+    clone_command
+        .arg("clone")
+        .arg("--bare")
+        .arg(&clone_url)
+        .arg(&bare_path)
+        .envs(build_clone_auth_env(&askpass_path));
+
+    let clone_result = tokio::time::timeout(CLONE_TIMEOUT, clone_command.output()).await;
 
     match clone_result {
         Ok(Ok(output)) => {
@@ -386,5 +397,16 @@ mod tests {
     fn test_timeout_constant_is_10_minutes() {
         // Verify the timeout is set to 10 minutes as documented
         assert_eq!(CLONE_TIMEOUT.as_secs(), 600);
+    }
+
+    #[test]
+    fn test_clone_auth_env_includes_non_interactive_askpass() {
+        let env = build_clone_auth_env(PathBuf::from("/tmp/git-askpass.sh").as_path());
+
+        assert_eq!(env.get("GIT_TERMINAL_PROMPT"), Some(&"0".to_string()));
+        assert_eq!(
+            env.get("GIT_ASKPASS"),
+            Some(&"/tmp/git-askpass.sh".to_string())
+        );
     }
 }
