@@ -12,6 +12,7 @@ Before installing forgebot, ensure you have:
 
 - A running **Forgejo instance** (self-hosted or compatible)
 - **opencode** installed and available in your `PATH`
+- **forgejo-mcp** installed and available in your `PATH` (NixOS module provides this by default)
 - **NixOS** or **Linux** — NixOS is the primary deployment target; other Linux distributions work via manual binary deployment
 - **Nix** with flakes enabled (if using the Nix environment loader feature)
 - **Git** installed (for worktree management)
@@ -74,6 +75,9 @@ In your `configuration.nix`:
     enable = true;
     forgejo.url = "https://git.example.com";
     secretsFilePath = config.sops.secrets.forgebot.path;
+
+    # OPTIONAL: Override forgejo-mcp package used by opencode MCP integration
+    # forgejoMcpPackage = pkgs.forgejo-mcp;
   };
 }
 ```
@@ -266,6 +270,8 @@ For non-NixOS systems, follow this alternative deployment path:
     export FORGEBOT_WEBHOOK_SECRET="your-webhook-secret-here"
     export FORGEBOT_FORGEJO_URL="https://git.example.com"
     export FORGEBOT_FORGEJO_TOKEN="your-forgejo-api-token"
+
+    # forgejo-mcp must also be available in PATH for opencode MCP calls
     
     # Optional - override defaults
     export FORGEBOT_SERVER_HOST="127.0.0.1"
@@ -307,8 +313,8 @@ For non-NixOS systems, follow this alternative deployment path:
     Environment="FORGEBOT_GIT_BINARY=/usr/bin/git"
     Environment="FORGEBOT_OPENCODE_BINARY=/usr/local/bin/opencode"
     
-    # Ensure opencode is in PATH
-   Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+    # Ensure opencode and forgejo-mcp are in PATH
+    Environment="PATH=/usr/local/bin:/usr/bin:/bin"
    Environment="RUST_LOG=info"
    
    Restart=on-failure
