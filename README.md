@@ -469,6 +469,8 @@ process-compose up -D
 The runtime setup creates isolated XDG directories for OpenCode state and sets `HOME` to the runtime root so embedded OpenCode does not read your host config.
 
 The local stack starts both `forgebot` and `opencode serve` so API transport smoke tests run with production-like routing.
+By default it binds embedded OpenCode to `127.0.0.1:44096` to avoid clashing with a host-level dev server on `4096`.
+You can override the local embedded port via `FORGEBOT_LOCAL_OPENCODE_PORT`.
 
 For a semi-automated manual-gated smoke test (issue -> plan -> proceed -> PR), run:
 
