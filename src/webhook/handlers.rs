@@ -74,6 +74,14 @@ enum IssueCommentSessionResult {
     CreationError,
 }
 
+fn pr_number_from_issue_comment(payload: &IssueCommentPayload) -> Option<u64> {
+    payload
+        .issue
+        .pull_request
+        .as_ref()
+        .map(|_| payload.issue.number)
+}
+
 async fn validate_watched_repo(db: &DbPool, repo_full_name: &str) -> Option<Response> {
     match get_repo_by_full_name(db, repo_full_name).await {
         Ok(Some(_repo)) => None,
@@ -323,49 +331,152 @@ pub async fn handle_issue_comment(
         return Ok(ok_response("OK - dispatch already in-flight"));
     }
 
-    // 6. Look up or create session row
-    let session_record = match load_or_create_issue_session(&payload, db, forgejo, config).await {
-        IssueCommentSessionResult::Ready(session) => session,
-        IssueCommentSessionResult::ErrorLogged => {
-            release_issue_dispatch_lock(
-                in_flight_issue_triggers,
-                &payload.repository.full_name,
-                payload.issue.number,
-            )
-            .await;
-            return Ok(ok_response("OK - error logged"));
-        }
-        IssueCommentSessionResult::CreationError => {
-            release_issue_dispatch_lock(
-                in_flight_issue_triggers,
-                &payload.repository.full_name,
-                payload.issue.number,
-            )
-            .await;
-            return Ok(ok_response("OK - session creation error"));
-        }
-    };
+    // 6. Route PR timeline comments through PR session resume, issue comments through issue flow.
+    if let Some(pr_number) = pr_number_from_issue_comment(&payload) {
+        let session = match get_session_by_pr(db, pr_number as i64).await {
+            Ok(Some(session)) => session,
+            Ok(None) => {
+                warn!(
+                    repo = %payload.repository.full_name,
+                    pr_id = %pr_number,
+                    "No session found for PR timeline comment"
+                );
+                let fail_msg = comment_text_no_context();
+                post_pr_comment_non_blocking(
+                    forgejo,
+                    &payload.repository.full_name,
+                    pr_number,
+                    &fail_msg,
+                    "missing session context",
+                )
+                .await;
+                release_issue_dispatch_lock(
+                    in_flight_issue_triggers,
+                    &payload.repository.full_name,
+                    payload.issue.number,
+                )
+                .await;
+                return Ok(ok_response("OK - no session context"));
+            }
+            Err(e) => {
+                error!(
+                    repo = %payload.repository.full_name,
+                    pr_id = %pr_number,
+                    err = %e,
+                    "Failed to load session for PR timeline comment"
+                );
+                let err_msg = comment_text_error(&format!("Failed to load session: {}", e));
+                post_pr_comment_non_blocking(
+                    forgejo,
+                    &payload.repository.full_name,
+                    pr_number,
+                    &err_msg,
+                    "session load by PR error",
+                )
+                .await;
+                release_issue_dispatch_lock(
+                    in_flight_issue_triggers,
+                    &payload.repository.full_name,
+                    payload.issue.number,
+                )
+                .await;
+                return Ok(ok_response("OK - error logged"));
+            }
+        };
 
-    let action = SessionAction::Plan;
-    info!(
-        mode = %session_record.mode.as_str(),
-        action = %action.as_str(),
-        "Selected issue-comment action"
-    );
+        let action = SessionAction::Revision;
+        info!(
+            mode = %session.mode.as_str(),
+            action = %action.as_str(),
+            issue_id = %session.issue_id,
+            pr_id = %pr_number,
+            "Selected PR timeline issue-comment action"
+        );
 
-    // 7. Create SessionTrigger and dispatch in background task.
-    // Acknowledgement comments are posted from dispatch after admission gate passes.
-    spawn_issue_dispatch(
-        payload,
-        db.clone(),
-        forgejo.clone(),
-        config.clone(),
-        action,
-        Arc::clone(in_flight_issue_triggers),
-    );
+        spawn_pr_timeline_dispatch(
+            payload,
+            db.clone(),
+            forgejo.clone(),
+            config.clone(),
+            session.issue_id as u64,
+            Arc::clone(in_flight_issue_triggers),
+        );
+    } else {
+        // 6. Look up or create session row
+        let session_record = match load_or_create_issue_session(&payload, db, forgejo, config).await
+        {
+            IssueCommentSessionResult::Ready(session) => session,
+            IssueCommentSessionResult::ErrorLogged => {
+                release_issue_dispatch_lock(
+                    in_flight_issue_triggers,
+                    &payload.repository.full_name,
+                    payload.issue.number,
+                )
+                .await;
+                return Ok(ok_response("OK - error logged"));
+            }
+            IssueCommentSessionResult::CreationError => {
+                release_issue_dispatch_lock(
+                    in_flight_issue_triggers,
+                    &payload.repository.full_name,
+                    payload.issue.number,
+                )
+                .await;
+                return Ok(ok_response("OK - session creation error"));
+            }
+        };
+
+        let action = SessionAction::Plan;
+        info!(
+            mode = %session_record.mode.as_str(),
+            action = %action.as_str(),
+            "Selected issue-comment action"
+        );
+
+        // 7. Create SessionTrigger and dispatch in background task.
+        // Acknowledgement comments are posted from dispatch after admission gate passes.
+        spawn_issue_dispatch(
+            payload,
+            db.clone(),
+            forgejo.clone(),
+            config.clone(),
+            action,
+            Arc::clone(in_flight_issue_triggers),
+        );
+    }
 
     // 8. Return 200 immediately (non-blocking)
     Ok(ok_response("OK - dispatching session"))
+}
+
+fn spawn_pr_timeline_dispatch(
+    payload: IssueCommentPayload,
+    db: DbPool,
+    forgejo: ForgejoClient,
+    config: Config,
+    issue_id: u64,
+    in_flight_issue_triggers: Arc<Mutex<HashSet<String>>>,
+) {
+    let pr_number = payload.issue.number;
+    let trigger = SessionTrigger {
+        repo_full_name: payload.repository.full_name.clone(),
+        issue_id,
+        pr_id: Some(pr_number),
+        action: SessionAction::Revision,
+    };
+
+    tokio::spawn(async move {
+        if let Err(e) = dispatch_session(&db, &forgejo, &config, trigger).await {
+            error!(
+                "dispatch_session failed for {} PR {}: {}",
+                payload.repository.full_name, pr_number, e
+            );
+        }
+
+        let lock_key = format!("{}#{}", payload.repository.full_name, payload.issue.number);
+        let mut in_flight = in_flight_issue_triggers.lock().await;
+        in_flight.remove(&lock_key);
+    });
 }
 
 /// Handle pull_request webhook events (opened, closed, merged)
@@ -679,5 +790,64 @@ mod tests {
             extract_issue_id_from_branch("agent/issue-42-extra"),
             Some(42)
         );
+    }
+
+    #[test]
+    fn test_pr_number_from_issue_comment_when_comment_is_on_pr() {
+        let payload: IssueCommentPayload = serde_json::from_str(
+            r#"{
+                "action": "created",
+                "issue": {
+                    "number": 77,
+                    "title": "Some PR",
+                    "body": null,
+                    "state": "open",
+                    "pull_request": {
+                        "url": "https://forgejo.local/api/v1/repos/acme/demo/pulls/77"
+                    }
+                },
+                "comment": {
+                    "id": 500,
+                    "body": "@forgebot please update this",
+                    "user": { "id": 1, "login": "alice" }
+                },
+                "repository": {
+                    "id": 9,
+                    "full_name": "acme/demo"
+                },
+                "sender": { "id": 1, "login": "alice" }
+            }"#,
+        )
+        .expect("payload should deserialize");
+
+        assert_eq!(pr_number_from_issue_comment(&payload), Some(77));
+    }
+
+    #[test]
+    fn test_pr_number_from_issue_comment_when_comment_is_on_issue() {
+        let payload: IssueCommentPayload = serde_json::from_str(
+            r#"{
+                "action": "created",
+                "issue": {
+                    "number": 42,
+                    "title": "Some issue",
+                    "body": null,
+                    "state": "open"
+                },
+                "comment": {
+                    "id": 501,
+                    "body": "@forgebot plan this",
+                    "user": { "id": 2, "login": "bob" }
+                },
+                "repository": {
+                    "id": 10,
+                    "full_name": "acme/demo"
+                },
+                "sender": { "id": 2, "login": "bob" }
+            }"#,
+        )
+        .expect("payload should deserialize");
+
+        assert_eq!(pr_number_from_issue_comment(&payload), None);
     }
 }

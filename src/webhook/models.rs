@@ -42,6 +42,14 @@ pub struct IssueWebhook {
     pub title: String,
     pub body: Option<String>,
     pub state: String,
+    pub pull_request: Option<PullRequestMarker>,
+}
+
+/// Marker included by Forgejo when an issue_comment belongs to a pull request timeline
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct PullRequestMarker {
+    pub url: Option<String>,
 }
 
 /// Pull request object in webhook payloads
@@ -98,4 +106,38 @@ pub struct PullRequestReviewCommentPayload {
     pub review_comment: ReviewCommentWebhook,
     pub repository: Repository,
     pub sender: User,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_issue_comment_payload_allows_pull_request_marker_without_url() {
+        let payload = r#"{
+            "action": "created",
+            "issue": {
+                "number": 45,
+                "title": "PR title",
+                "body": null,
+                "state": "open",
+                "pull_request": {}
+            },
+            "comment": {
+                "id": 1339,
+                "body": "@forgebot please update",
+                "user": { "id": 1, "login": "riley" }
+            },
+            "repository": {
+                "id": 211,
+                "full_name": "riley/terminal-config"
+            },
+            "sender": { "id": 1, "login": "riley" }
+        }"#;
+
+        let parsed: IssueCommentPayload =
+            serde_json::from_str(payload).expect("payload should deserialize");
+
+        assert!(parsed.issue.pull_request.is_some());
+    }
 }
