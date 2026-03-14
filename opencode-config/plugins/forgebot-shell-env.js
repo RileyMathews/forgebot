@@ -6,6 +6,41 @@ const cache = new Map();
 let init_logged = false;
 
 const SECRET_NAME_PATTERN = /(token|secret|password|key|auth|cookie|session)/i;
+const NIX_ENV_BLOCKLIST = new Set([
+  "HOME",
+  "TMP",
+  "TEMP",
+  "TMPDIR",
+  "TEMPDIR",
+  "NIX_BUILD_TOP",
+  "__structuredAttrs",
+  "out",
+  "outputs",
+  "builder",
+  "buildPhase",
+  "phases",
+  "buildInputs",
+  "nativeBuildInputs",
+  "propagatedBuildInputs",
+  "propagatedNativeBuildInputs",
+  "configureFlags",
+  "cmakeFlags",
+  "mesonFlags",
+  "patches",
+  "strictDeps",
+  "preferLocalBuild",
+  "depsBuildBuild",
+  "depsBuildBuildPropagated",
+  "depsBuildTarget",
+  "depsBuildTargetPropagated",
+  "depsHostHost",
+  "depsHostHostPropagated",
+  "depsTargetTarget",
+  "depsTargetTargetPropagated",
+  "doCheck",
+  "doInstallCheck",
+  "name",
+]);
 
 function log_debug(message, extra) {
   try {
@@ -119,6 +154,7 @@ async function load_direnv(cwd) {
 async function load_nix(cwd) {
   const raw = await run_json_command("nix", ["print-dev-env", "--json"], cwd);
   const env = {};
+  const filtered_keys = [];
 
   const variables = raw.variables;
   if (!variables || typeof variables !== "object") {
@@ -132,8 +168,20 @@ async function load_nix(cwd) {
       variable.type === "exported" &&
       typeof variable.value === "string"
     ) {
+      if (NIX_ENV_BLOCKLIST.has(key)) {
+        filtered_keys.push(key);
+        continue;
+      }
       env[key] = variable.value;
     }
+  }
+
+  if (filtered_keys.length > 0) {
+    log_debug("filtered nix build/sandbox variables", {
+      cwd,
+      count: filtered_keys.length,
+      keys: filtered_keys.sort(),
+    });
   }
 
   return env;
