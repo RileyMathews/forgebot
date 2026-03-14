@@ -47,21 +47,6 @@ async fn main() -> () {
         "Configuration loaded successfully"
     );
 
-    let api_client = session::opencode_api::OpencodeApiClient::from_config(&config.opencode.api)
-        .expect("Failed to initialize OpenCode API client");
-    let health = api_client
-        .health()
-        .await
-        .expect("Opencode API should be healthy");
-    if !health.healthy {
-        panic!("Opencode API check returned unealthy status");
-    }
-
-    info!(
-        opencode_api_version = %health.version,
-        "OpenCode API startup health check passed"
-    );
-
     // Initialize database
     let db_pool = db::init_db(&config.database)
         .await
