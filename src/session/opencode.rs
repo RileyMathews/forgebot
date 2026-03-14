@@ -33,6 +33,7 @@ use tracing::{error, info, warn};
 const PACKAGE_JSON: &str = include_str!("../../opencode-config/package.json");
 const OPENCODE_JSON: &str = include_str!("../../opencode-config/opencode.json");
 const AGENT_DEF: &str = include_str!("../../opencode-config/agents/forgebot.md");
+const SHELL_ENV_PLUGIN: &str = include_str!("../../opencode-config/plugins/forgebot-shell-env.js");
 
 /// Sets up the opencode config directory with embedded template files.
 ///
@@ -63,11 +64,19 @@ pub fn setup_opencode_config_dir(config: &OpencodeConfig) -> Result<()> {
 
     // Create subdirectories
     let agents_dir = config_dir.join("agents");
+    let plugins_dir = config_dir.join("plugins");
 
     std::fs::create_dir_all(&agents_dir).with_context(|| {
         format!(
             "Failed to create agents directory: {}",
             agents_dir.display()
+        )
+    })?;
+
+    std::fs::create_dir_all(&plugins_dir).with_context(|| {
+        format!(
+            "Failed to create plugins directory: {}",
+            plugins_dir.display()
         )
     })?;
 
@@ -87,6 +96,11 @@ pub fn setup_opencode_config_dir(config: &OpencodeConfig) -> Result<()> {
             agents_dir.join("forgebot.md"),
             AGENT_DEF,
             "agents/forgebot.md",
+        ),
+        (
+            plugins_dir.join("forgebot-shell-env.js"),
+            SHELL_ENV_PLUGIN,
+            "plugins/forgebot-shell-env.js",
         ),
     ];
 
@@ -1027,6 +1041,12 @@ mod tests {
         assert!(temp_dir.join("package.json").exists());
         assert!(temp_dir.join("opencode.json").exists());
         assert!(temp_dir.join("agents").join("forgebot.md").exists());
+        assert!(
+            temp_dir
+                .join("plugins")
+                .join("forgebot-shell-env.js")
+                .exists()
+        );
 
         // Verify content was written correctly
         let package_json_content = std::fs::read_to_string(temp_dir.join("package.json")).unwrap();
@@ -1039,6 +1059,15 @@ mod tests {
         let agent_content =
             std::fs::read_to_string(temp_dir.join("agents").join("forgebot.md")).unwrap();
         assert!(agent_content.contains("forgebot"));
+
+        let plugin_content = std::fs::read_to_string(
+            temp_dir
+                .join("plugins")
+                .join("forgebot-shell-env.js"),
+        )
+        .unwrap();
+        assert!(plugin_content.contains("shell.env"));
+        assert!(plugin_content.contains("print-dev-env"));
 
         // Clean up
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -1081,6 +1110,12 @@ mod tests {
 
         // But other files should still be created
         assert!(temp_dir.join("agents").join("forgebot.md").exists());
+        assert!(
+            temp_dir
+                .join("plugins")
+                .join("forgebot-shell-env.js")
+                .exists()
+        );
 
         // Clean up
         let _ = std::fs::remove_dir_all(&temp_dir);
