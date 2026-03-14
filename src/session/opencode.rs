@@ -5,6 +5,10 @@
 //! 2. Dispatching OpenCode API prompts with proper session continuity
 //! 3. Session orchestration and lifecycle management
 //! 4. Crash recovery on startup
+//!
+//! This module is in active use by the current server flow:
+//! - `main.rs` calls `setup_opencode_config_dir` and `startup_crash_recovery`
+//! - `webhook/handlers.rs` calls `dispatch_session` for `@forgebot` triggers
 
 use crate::config::Config;
 use crate::db::{
