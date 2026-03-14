@@ -9,6 +9,11 @@
 //! This module is in active use by the current server flow:
 //! - `main.rs` calls `setup_opencode_config_dir` and `startup_crash_recovery`
 //! - `webhook/handlers.rs` calls `dispatch_session` for `@forgebot` triggers
+//! - `run_opencode` executes the opencode CLI subprocess (`opencode run ...`)
+//!
+//! Note: this module is the active orchestration path for server-triggered
+//! sessions today; the web UI is an observer/session-link surface, not a
+//! replacement execution transport in this code path.
 
 use crate::config::Config;
 use crate::db::{
