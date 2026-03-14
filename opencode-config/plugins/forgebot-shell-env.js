@@ -5,6 +5,8 @@ import { spawn } from "node:child_process";
 const cache = new Map();
 let init_logged = false;
 
+const SECRET_NAME_PATTERN = /(token|secret|password|key|auth|cookie|session)/i;
+
 function log_debug(message, extra) {
   try {
     if (extra === undefined) {
@@ -14,6 +16,39 @@ function log_debug(message, extra) {
     console.error(`[forgebot-shell-env] ${message}`, extra);
   } catch {
     // no-op
+  }
+}
+
+function redact_env_value(name, value) {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  if (SECRET_NAME_PATTERN.test(name)) {
+    return `<redacted:${value.length}>`;
+  }
+
+  if (name === "PATH") {
+    return value;
+  }
+
+  if (value.length > 160) {
+    return `${value.slice(0, 160)}...<len:${value.length}>`;
+  }
+
+  return value;
+}
+
+function log_loaded_env_vars(cwd, env) {
+  const keys = Object.keys(env).sort();
+  log_debug("environment variable keys loaded", { cwd, count: keys.length, keys });
+
+  for (const key of keys) {
+    log_debug("environment variable loaded", {
+      cwd,
+      key,
+      value: redact_env_value(key, env[key]),
+    });
   }
 }
 
@@ -123,6 +158,26 @@ async function detect_and_load(cwd) {
   return {};
 }
 
+async function load_env_for_cwd(cwd) {
+  let env = cache.get(cwd);
+  if (!env) {
+    try {
+      env = await detect_and_load(cwd);
+      log_debug("loaded environment values", {
+        cwd,
+        keys: Object.keys(env).length,
+        has_path: typeof env.PATH === "string" && env.PATH.length > 0,
+      });
+      log_loaded_env_vars(cwd, env);
+    } catch {
+      log_debug("failed to load environment values; using empty env", { cwd });
+      env = {};
+    }
+    cache.set(cwd, env);
+  }
+  return env;
+}
+
 export const ForgebotShellEnv = async () => {
   log_debug("plugin initialized");
   return {
@@ -136,22 +191,7 @@ export const ForgebotShellEnv = async () => {
         init_logged = true;
       }
 
-      let env = cache.get(input.cwd);
-      if (!env) {
-        try {
-          env = await detect_and_load(input.cwd);
-          log_debug("loaded environment values", {
-            cwd: input.cwd,
-            keys: Object.keys(env).length,
-          });
-        } catch {
-          log_debug("failed to load environment values; using empty env", {
-            cwd: input.cwd,
-          });
-          env = {};
-        }
-        cache.set(input.cwd, env);
-      }
+      const env = await load_env_for_cwd(input.cwd);
 
       output.env = {
         ...output.env,
