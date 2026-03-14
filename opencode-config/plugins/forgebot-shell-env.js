@@ -4,7 +4,6 @@ import { spawn } from "node:child_process";
 
 const cache = new Map();
 let init_logged = false;
-let tool_hook_invocations = 0;
 
 const SECRET_NAME_PATTERN = /(token|secret|password|key|auth|cookie|session)/i;
 
@@ -51,33 +50,6 @@ function log_loaded_env_vars(cwd, env) {
       value: redact_env_value(key, env[key]),
     });
   }
-}
-
-function shell_quote(value) {
-  return `'${String(value).replace(/'/g, `'"'"'`)}'`;
-}
-
-function command_preview(command) {
-  if (typeof command !== "string") {
-    return "<non-string>";
-  }
-  if (command.length <= 200) {
-    return command;
-  }
-  return `${command.slice(0, 200)}...<len:${command.length}>`;
-}
-
-function resolve_tool_cwd(input, output) {
-  if (typeof input?.cwd === "string" && input.cwd.length > 0) {
-    return input.cwd;
-  }
-  if (typeof input?.args?.cwd === "string" && input.args.cwd.length > 0) {
-    return input.args.cwd;
-  }
-  if (typeof output?.args?.cwd === "string" && output.args.cwd.length > 0) {
-    return output.args.cwd;
-  }
-  return null;
 }
 
 async function path_exists(path) {
@@ -226,53 +198,6 @@ export const ForgebotShellEnv = async () => {
         ...env,
         FORGEBOT_SHELL_ENV_PLUGIN_ACTIVE: "1",
       };
-    },
-    "tool.execute.before": async (input, output) => {
-      if (input.tool !== "bash") {
-        return;
-      }
-
-      const cwd = resolve_tool_cwd(input, output);
-      if (!cwd) {
-        log_debug("tool.execute.before missing cwd; skipping PATH override", {
-          input_cwd: input.cwd,
-        });
-        return;
-      }
-
-      const original_command = output?.args?.command;
-      if (typeof original_command !== "string") {
-        log_debug("tool.execute.before command missing; skipping PATH override", {
-          cwd,
-          command_type: typeof original_command,
-        });
-        return;
-      }
-
-      const env = await load_env_for_cwd(cwd);
-      const path_value = env.PATH;
-      if (typeof path_value !== "string" || path_value.length === 0) {
-        log_debug("tool.execute.before no PATH from env loader; skipping", {
-          cwd,
-          env_keys: Object.keys(env).length,
-        });
-        return;
-      }
-
-      const rewritten_command =
-        `export PATH=${shell_quote(path_value)}; export FORGEBOT_SHELL_ENV_PATH_OVERRIDE=1; ` +
-        original_command;
-
-      output.args.command = rewritten_command;
-      tool_hook_invocations += 1;
-
-      log_debug("tool.execute.before rewrote bash command with PATH override", {
-        cwd,
-        invocation: tool_hook_invocations,
-        path_prefix: path_value.slice(0, 180),
-        original_command: command_preview(original_command),
-        rewritten_preview: command_preview(rewritten_command),
-      });
     },
   };
 };
