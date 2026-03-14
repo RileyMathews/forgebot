@@ -178,31 +178,6 @@ in
             '';
           };
 
-          worktreeBase = lib.mkOption {
-            type = lib.types.path;
-            default = "/var/lib/forgebot/worktrees";
-            example = "/var/lib/forgebot/worktrees";
-            description = ''
-              Base directory for git worktrees.
-              forgebot creates a worktree for each issue inside this directory.
-              Each worktree is an isolated checkout to prevent concurrent sessions
-              from interfering with each other.
-              
-              Directory structure: <worktree_base>/<owner>_<repo>/<issue_number>/
-            '';
-          };
-
-          configDir = lib.mkOption {
-            type = lib.types.path;
-            default = "/var/lib/forgebot/opencode-config";
-            example = "/var/lib/forgebot/opencode-config";
-            description = ''
-              Directory for opencode configuration files.
-              forgebot populates this with package.json, opencode.json, and agent definitions.
-              Do not modify these files manually — they are managed by forgebot.
-            '';
-          };
-
           model = lib.mkOption {
             type = lib.types.str;
             default = "opencode/kimi-k2.5";
@@ -254,28 +229,6 @@ in
       default = { };
       description = "Opencode web server configuration (always enabled).";
     };
-
-    # =============================================================================
-    # Database configuration
-    # =============================================================================
-    database = lib.mkOption {
-      type = lib.types.submodule {
-        options = {
-          path = lib.mkOption {
-            type = lib.types.path;
-            default = "/var/lib/forgebot/forgebot.db";
-            example = "/var/lib/forgebot/forgebot.db";
-            description = ''
-              Path to the SQLite database file.
-              The database is created automatically on first run if it doesn't exist.
-              Migrations run automatically on startup.
-            '';
-          };
-        };
-      };
-      default = { };
-      description = "SQLite database settings for persisting repository registrations and session state.";
-    };
   };
 
   config = lib.mkIf cfg.enable (
@@ -292,6 +245,10 @@ in
           "${cfg.opencodePackage}/bin/opencode"
         else
           cfg.opencode.binary;
+
+      opencodeManagedConfig = "${self}/opencode-config";
+      opencodeWorktreeBase = "${cfg.dataDir}/worktrees";
+      databasePath = "${cfg.dataDir}/forgebot.db";
     in
     {
       # Create the forgebot user
@@ -310,13 +267,11 @@ in
       # Ensure data directory exists with correct permissions
       systemd.tmpfiles.rules = [
         "d '${cfg.dataDir}' 0755 ${cfg.user} ${cfg.group} -"
-        "d '${cfg.opencode.worktreeBase}' 0755 ${cfg.user} ${cfg.group} -"
-        "d '${cfg.opencode.configDir}' 0755 ${cfg.user} ${cfg.group} -"
+        "d '${opencodeWorktreeBase}' 0755 ${cfg.user} ${cfg.group} -"
         # XDG directories for opencode
         "d '${cfg.dataDir}/data' 0755 ${cfg.user} ${cfg.group} -"
         "d '${cfg.dataDir}/data/opencode' 0755 ${cfg.user} ${cfg.group} -"
         "d '${cfg.dataDir}/config' 0755 ${cfg.user} ${cfg.group} -"
-        "d '${cfg.dataDir}/config/opencode' 0755 ${cfg.user} ${cfg.group} -"
       ];
 
       # Define the systemd service
@@ -326,39 +281,6 @@ in
         after = [ "network-online.target" "forgebot-opencode-web.service" ];
         wants = [ "network-online.target" "forgebot-opencode-web.service" ];
         requires = [ "forgebot-opencode-web.service" ];
-
-        preStart = ''
-          # Create XDG directories for opencode
-          mkdir -p ${cfg.dataDir}/data/opencode
-          mkdir -p ${cfg.dataDir}/config/opencode
-          mkdir -p ${cfg.dataDir}/cache
-          mkdir -p ${cfg.dataDir}/cache/bun
-          chmod 755 ${cfg.dataDir}/data ${cfg.dataDir}/config
-          chmod 755 ${cfg.dataDir}/data/opencode ${cfg.dataDir}/config/opencode ${cfg.dataDir}/cache ${cfg.dataDir}/cache/bun
-
-          # Generate opencode.json with model selection in the config directory
-          cat > ${cfg.dataDir}/config/opencode/opencode.json <<EOF
-          {
-            "\$schema": "https://opencode.ai/config.json",
-            "model": "${cfg.opencode.model}"
-          }
-          EOF
-          chmod 644 ${cfg.dataDir}/config/opencode/opencode.json
-          chown ${cfg.user}:${cfg.group} ${cfg.dataDir}/config/opencode/opencode.json
-
-          # Link forgebot's managed opencode config to the XDG config dir
-          # This makes them available to opencode via OPENCODE_CONFIG_DIR
-          if [ -d "${cfg.opencode.configDir}" ]; then
-            mkdir -p ${cfg.dataDir}/config/opencode/.opencode
-            cp -r ${cfg.opencode.configDir}/* ${cfg.dataDir}/config/opencode/.opencode/ 2>/dev/null || true
-            chown -R ${cfg.user}:${cfg.group} ${cfg.dataDir}/config/opencode/.opencode
-          fi
-
-          echo "Opencode configuration generated:"
-          echo "  - Model: ${cfg.opencode.model}"
-          echo "  - Config file: ${cfg.dataDir}/config/opencode/opencode.json (via XDG_CONFIG_HOME)"
-          echo "  - Custom config: ${cfg.dataDir}/config/opencode/.opencode (via OPENCODE_CONFIG_DIR)"
-        '';
 
         serviceConfig = {
           Type = "simple";
@@ -415,11 +337,11 @@ in
             "FORGEBOT_FORGEJO_URL=${cfg.forgejo.url}"
             "FORGEBOT_FORGEJO_BOT_USERNAME=${cfg.forgejo.botUsername}"
             "FORGEBOT_OPENCODE_BINARY=${opencodeBinary}"
-            "FORGEBOT_OPENCODE_WORKTREE_BASE=${cfg.opencode.worktreeBase}"
-            "FORGEBOT_OPENCODE_CONFIG_DIR=${cfg.dataDir}/config/opencode/.opencode"
+            "FORGEBOT_OPENCODE_WORKTREE_BASE=${opencodeWorktreeBase}"
+            "FORGEBOT_OPENCODE_CONFIG_DIR=${opencodeManagedConfig}"
             "FORGEBOT_OPENCODE_MODEL=${cfg.opencode.model}"
             "FORGEBOT_OPENCODE_API_BASE_URL=http://127.0.0.1:${toString cfg.opencodeWebServer.port}"
-            "FORGEBOT_DATABASE_PATH=${cfg.database.path}"
+            "FORGEBOT_DATABASE_PATH=${databasePath}"
             "GIT_AUTHOR_NAME=forgebot"
             "GIT_AUTHOR_EMAIL=forgebot@localhost"
             "GIT_COMMITTER_NAME=forgebot"
@@ -430,7 +352,7 @@ in
             "XDG_CACHE_HOME=${cfg.dataDir}/cache"
             "BUN_INSTALL_CACHE_DIR=${cfg.dataDir}/cache/bun"
             # Opencode-specific config directory (for managed agent/config files)
-            "OPENCODE_CONFIG_DIR=${cfg.dataDir}/config/opencode/.opencode"
+            "OPENCODE_CONFIG_DIR=${opencodeManagedConfig}"
           ] 
           ++ lib.optional (cfg.server.forgeBotHost != null) "FORGEBOT_FORGEBOT_HOST=${cfg.server.forgeBotHost}"
           ++ lib.optional (cfg.opencodeWebServer.host != null) "FORGEBOT_OPENCODE_WEB_HOST=${cfg.opencodeWebServer.host}"
@@ -489,7 +411,7 @@ in
             "XDG_CONFIG_HOME=${cfg.dataDir}/config"
             "XDG_CACHE_HOME=${cfg.dataDir}/cache"
             "BUN_INSTALL_CACHE_DIR=${cfg.dataDir}/cache/bun"
-            "OPENCODE_CONFIG_DIR=${cfg.dataDir}/config/opencode/.opencode"
+            "OPENCODE_CONFIG_DIR=${opencodeManagedConfig}"
           ];
 
           EnvironmentFile = lib.optional (cfg.secretsFilePath != null) cfg.secretsFilePath;

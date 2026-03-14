@@ -44,7 +44,6 @@ struct RepoSetupTemplate {
     token_valid: bool,
     opencode_exists: bool,
     opencode_path: String,
-    config_files_exist: bool,
     message: Option<String>,
     success: bool,
 }
@@ -452,8 +451,6 @@ async fn build_repo_setup_template(
 
     let opencode_path = &state.config.opencode.binary;
     let opencode_exists = which::which(opencode_path).is_ok() || Path::new(opencode_path).exists();
-    let config_files_exist = state.config.opencode.config_dir.exists();
-
     RepoSetupTemplate {
         full_name,
         owner,
@@ -467,7 +464,6 @@ async fn build_repo_setup_template(
         token_valid,
         opencode_exists,
         opencode_path: opencode_path.clone(),
-        config_files_exist,
         message,
         success,
     }

@@ -19,20 +19,15 @@ async fn main() -> () {
     let askpass_path = config::askpass_script_path();
     config::setup_askpass_script(&askpass_path).expect("Failed to set up git askpass script");
 
-    // Set up opencode config directory
-    session::opencode::setup_opencode_config_dir(&config.opencode)
-        .expect("Failed to set up opencode config directory");
-
     // Ensure worktree base directory exists
     tokio::fs::create_dir_all(&config.opencode.worktree_base)
         .await
         .expect("could not create opencode worktree dir");
 
     info!(
-        config_dir = %config.opencode.config_dir.display(),
         worktree_base = %config.opencode.worktree_base.display(),
         askpass_path = %askpass_path.display(),
-        "Opencode config and worktree directories initialized"
+        "Worktree directory initialized"
     );
 
     info!(
