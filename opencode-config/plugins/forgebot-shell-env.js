@@ -6,6 +6,7 @@ const cache = new Map();
 let init_logged = false;
 
 const SECRET_NAME_PATTERN = /(token|secret|password|key|auth|cookie|session)/i;
+const DEFAULT_ASKPASS_PATH = "/var/lib/forgebot/git-askpass.sh";
 const NIX_ENV_BLOCKLIST = new Set([
   "HOME",
   "TMP",
@@ -87,6 +88,17 @@ function log_loaded_env_vars(cwd, env) {
   }
 }
 
+function build_always_injected_env() {
+  const askpass = process.env.FORGEBOT_ASKPASS_PATH || DEFAULT_ASKPASS_PATH;
+
+  return {
+    GIT_ASKPASS: askpass,
+    SSH_ASKPASS: askpass,
+    GIT_TERMINAL_PROMPT: "0",
+    FORGEBOT_GIT_ASKPASS_ACTIVE: "1",
+  };
+}
+
 async function path_exists(path) {
   try {
     await access(path, fs_constants.F_OK);
@@ -138,19 +150,6 @@ function run_json_command(command, args, cwd) {
   });
 }
 
-async function load_direnv(cwd) {
-  const raw = await run_json_command("direnv", ["export", "json"], cwd);
-  const env = {};
-
-  for (const [key, value] of Object.entries(raw)) {
-    if (typeof value === "string") {
-      env[key] = value;
-    }
-  }
-
-  return env;
-}
-
 async function load_nix(cwd) {
   const raw = await run_json_command("nix", ["print-dev-env", "--json"], cwd);
   const env = {};
@@ -188,16 +187,16 @@ async function load_nix(cwd) {
 }
 
 async function detect_and_load(cwd) {
-  if (await path_exists(`${cwd}/.envrc`)) {
-    log_debug("detected .envrc; using direnv", { cwd });
-    return load_direnv(cwd);
-  }
-
-  if (
+  const has_nix_files =
     (await path_exists(`${cwd}/flake.nix`)) ||
     (await path_exists(`${cwd}/shell.nix`)) ||
-    (await path_exists(`${cwd}/default.nix`))
-  ) {
+    (await path_exists(`${cwd}/default.nix`));
+
+  if (await path_exists(`${cwd}/.envrc`)) {
+    log_debug("detected .envrc; direnv disabled for POC", { cwd });
+  }
+
+  if (has_nix_files) {
     log_debug("detected nix shell files; using nix print-dev-env", { cwd });
     return load_nix(cwd);
   }
@@ -240,12 +239,19 @@ export const ForgebotShellEnv = async () => {
       }
 
       const env = await load_env_for_cwd(input.cwd);
+      const always_env = build_always_injected_env();
 
       output.env = {
         ...output.env,
         ...env,
+        ...always_env,
         FORGEBOT_SHELL_ENV_PLUGIN_ACTIVE: "1",
       };
+
+      log_debug("injected always-on git auth env", {
+        cwd: input.cwd,
+        git_askpass: always_env.GIT_ASKPASS,
+      });
     },
   };
 };
