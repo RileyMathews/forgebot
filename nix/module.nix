@@ -246,7 +246,11 @@ in
         else
           cfg.opencode.binary;
 
-      opencodeManagedConfig = "${self}/opencode-config";
+      opencodeManagedConfig = pkgs.runCommand "forgebot-opencode-config" { } ''
+        mkdir -p "$out"
+        cp -R ${self}/opencode-config/. "$out/"
+        rm -f "$out/package.json"
+      '';
       opencodeWorktreeBase = "${cfg.dataDir}/worktrees";
       databasePath = "${cfg.dataDir}/forgebot.db";
     in
